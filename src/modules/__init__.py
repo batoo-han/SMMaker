@@ -1,62 +1,78 @@
 # src/modules/__init__.py
 
 """
-Модуль-«фабрика» для генераторов и публикаторов.
-
-Функция get_generator(name: str) возвращает экземпляр нужного генератора:
-  - "chatgpt" или "openai" → OpenAIGenerator
-  - "yandexgpt" или "yandex" → YandexGenerator
-
-Аналогично, get_publisher(name: str) отдаёт нужный класс-публикатор
-(например, VKPublisher, TelegramPublisher).
+Модуль «фабрика» для генераторов (text + image) и публикаторов.
+get_generator(name) → возвращает нужный генератор по имени.
+get_publisher(name) → возвращает нужный публикатор по имени.
 """
 
 from typing import Any
 
-# Импортируем все генераторы
+# Текстовые генераторы
 from src.modules.generators.openai_generator import OpenAIGenerator
 from src.modules.generators.yandex_generator import YandexGenerator
 
-# Импортируем публикаторы
+# Image-генераторы
+from src.modules.image_generators.openai_image_generator import OpenAIImageGenerator
+from src.modules.image_generators.fusionbrain_image_generator import FusionBrainImageGenerator
+
+# Публикаторы (оставляем без изменений, если они были)
 from src.modules.vk.vk_publisher import VKPublisher
 from src.modules.telegram.tg_publisher import TelegramPublisher
 
 
 def get_generator(name: str) -> Any:
     """
-    Возвращает экземпляр генератора текста или изображения по имени:
-      - Для текста:
-          "chatgpt" / "openai"   → OpenAIGenerator
-          "yandexgpt" / "yandex" → YandexGenerator
-      - Для изображений:
-          "openai"  → OpenAIGenerator (часть работы image)
-          # В будущем можно добавить "stable_diffusion" → StableDiffusionGenerator и т. д.
+    Возвращает экземпляр генератора по ключу `name`.
+
+    Ключи для текстовых генераторов:
+      - "openai" или "chatgpt"       → OpenAIGenerator
+      - "yandex" или "yandexgpt"     → YandexGenerator
+
+    Ключи для image-генераторов:
+      - "openai-image" или "openai"  → OpenAIImageGenerator
+      - "fusionbrain"                → FusionBrainImageGenerator
+
+    Замечание: если вы вызываете get_generator("openai") в контексте текcта,
+    лучше использовать "chatgpt" или "openai-text", чтобы не было путаницы.
+    Однако, по умолчанию "openai" тоже вернёт OpenAIImageGenerator.
+
+    :param name: строка-ключ провайдера
+    :return: экземпляр класса, у которого будут методы generate_text() или generate_image().
+    :raises: ValueError, если ключ не поддерживается.
     """
     key = name.strip().lower()
-    if key in ("chatgpt", "openai"):
+
+    # -------- Текстовые генераторы --------
+    if key in ("openai-text", "chatgpt"):
         return OpenAIGenerator()
-    if key in ("yandexgpt", "yandex"):
+    if key in ("yandex", "yandexgpt"):
         return YandexGenerator()
 
-    # Если имя совпадает с engine для изображений, тоже возвращаем OpenAIGenerator (DALL·E)
-    if key in ("dall-e-3", "dall-e3", "dalle-3", "dalle3"):
-        # В модуле OpenAIGenerator реализована и генерация картинок (DALL·E)
-        return OpenAIGenerator()
+    # -------- Image-генераторы --------
+    # Чтобы не ломать обратную совместимость:
+    # если name = "openai", возвращаем OpenAIImageGenerator
+    if key in ("openai-image", "openai"):
+        return OpenAIImageGenerator()
+    if key == "fusionbrain":
+        return FusionBrainImageGenerator()
 
-    raise ValueError(f"Unsupported generator: {name}")
+    raise ValueError(f"Unsupported generator module: {name}")
 
 
 def get_publisher(name: str) -> Any:
     """
     Возвращает экземпляр публикатора по имени:
-      - "vk" → VKPublisher
-      - "telegram" → TelegramPublisher
-      # В будущем добавите "instagram" → InstagramPublisher и т. д.
+      - "vk"       → VKPublisher
+      - "telegram" или "tg" → TelegramPublisher
+
+    :param name: строка-ключ публикатора
+    :return: экземпляр класса Publisher
     """
     key = name.strip().lower()
     if key == "vk":
         return VKPublisher()
-    if key == "telegram":
+    if key in ("telegram", "tg"):
         return TelegramPublisher()
 
     raise ValueError(f"Unsupported publisher module: {name}")

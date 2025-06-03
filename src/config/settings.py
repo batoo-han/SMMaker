@@ -30,24 +30,34 @@ from pydantic import Field
 
 from src.core.models import ScheduleConfig
 
+
 class Settings(BaseSettings):
+    # ----------------------------------------
     # 1) Google Sheets
+    # ----------------------------------------
     GOOGLE_CREDENTIALS_PATH: str = Field(..., env='GOOGLE_CREDENTIALS_PATH')
     SHEETS_SPREADSHEET: str = Field(..., env='SHEETS_SPREADSHEET')
     VK_SHEETS_TAB: str = Field(..., env='VK_SHEETS_TAB')
     TG_SHEETS_TAB: str = Field(..., env='TG_SHEETS_TAB')
 
+    # ----------------------------------------
     # 2) Соцсети: токены и идентификаторы
+    # ----------------------------------------
     VK_TOKEN: Optional[str] = Field(None, env='VK_TOKEN')
     VK_OWNER_ID: Optional[int] = Field(None, env='VK_OWNER_ID')
     TG_TOKEN: Optional[str] = Field(None, env='TG_TOKEN')
     TG_CHAT_ID: Optional[str] = Field(None, env='TG_CHAT_ID')
+    TG_CHAT_USERNAME: Optional[str] = Field(None, env="TG_CHAT_USERNAME")
 
+    # ----------------------------------------
     # 3) Включение/отключение публикаций
+    # ----------------------------------------
     ENABLE_VK: bool = Field(True, env='ENABLE_VK')
     ENABLE_TG: bool = Field(False, env='ENABLE_TG')
 
+    # ----------------------------------------
     # 4) Параметры генерации текста (OpenAI + Yandex)
+    # ----------------------------------------
     OPENAI_API_KEY: str = Field(..., env='OPENAI_API_KEY')
     OPENAI_MODEL: str = Field('gpt-4o', env='OPENAI_MODEL')
     OPENAI_TEMPERATURE: float = Field(0.7, env='OPENAI_TEMPERATURE')
@@ -57,19 +67,36 @@ class Settings(BaseSettings):
     YANDEXGPT_MODEL: str = Field('sberbank-ai/stablelm', env='YANDEXGPT_MODEL')
     YANDEXGPT_TEMPERATURE: float = Field(0.6, env='YANDEXGPT_TEMPERATURE')
 
+    # ----------------------------------------
     # 5) Генерация изображений
+    # ----------------------------------------
     IMAGE_NETWORK: str = Field('openai', env='IMAGE_NETWORK')
     IMAGE_MODEL: str = Field('dall-e-3', env='IMAGE_MODEL')
 
+    # --- Новые поля для FusionBrain ---
+    FUSIONBRAIN_API_KEY: Optional[str] = Field(None, env='FUSIONBRAIN_API_KEY')
+    FUSIONBRAIN_API_BASE_URL: str = Field(
+        'https://api.fusionbrain.ai/v1', env='FUSIONBRAIN_API_BASE_URL'
+    )
+    FUSIONBRAIN_DEFAULT_MODEL: str = Field(
+        'stable-diffusion-1', env='FUSIONBRAIN_DEFAULT_MODEL'
+    )
+
+    # ----------------------------------------
     # 6) ChromaDB
+    # ----------------------------------------
     CHROMA_PERSIST_DIR: str = Field('.chroma_db', env='CHROMA_PERSIST_DIR')
     CHROMA_COLLECTION_NAME: str = Field('smm_posts', env='CHROMA_COLLECTION_NAME')
     OPENAI_EMBEDDING_MODEL: str = Field('text-embedding-ada-002', env='OPENAI_EMBEDDING_MODEL')
 
+    # ----------------------------------------
     # 7) Путь к YAML-конфигу (для prompts и schedules)
+    # ----------------------------------------
     CONFIG_YAML_PATH: str = Field('config.yaml', env='CONFIG_YAML_PATH')
 
+    # ----------------------------------------
     # 8) После инициализации будут загружены из YAML
+    # ----------------------------------------
     PROMPT_TEXTS: Dict[str, str] = {}
     SCHEDULES: List[ScheduleConfig] = []
 
@@ -97,26 +124,25 @@ class Settings(BaseSettings):
             missing.append('YANDEX_API_KEY')
         if not self.YANDEX_CLOUD_FOLDER_ID:
             missing.append('YANDEX_CLOUD_FOLDER_ID')
+
+        # Если выбран FusionBrain в качестве IMAGE_NETWORK, проверяем API-ключ
+        if self.IMAGE_NETWORK.lower() == 'fusionbrain' and not self.FUSIONBRAIN_API_KEY:
+            missing.append('FUSIONBRAIN_API_KEY')
+
+        # Можно добавить и другие валидации, например, проверять IMAGE_MODEL,
+        # но обычно этот параметр имеет значение по умолчанию.
+
         if missing:
-            raise ValueError(f"Отсутствуют обязательные настройки: {', '.join(missing)}")
+            raise ValueError(f"Отсутствуют обязательные настройки: {missing}")
 
-        # Если VK включён, но нет VK_TOKEN или VK_OWNER_ID
-        if self.ENABLE_VK:
-            if not self.VK_TOKEN or self.VK_OWNER_ID is None:
-                raise ValueError("Для публикации в VK нужно задать VK_TOKEN и VK_OWNER_ID")
-
-        # Если TG включён, но нет TG_TOKEN или TG_CHAT_ID
-        if self.ENABLE_TG:
-            if not self.TG_TOKEN or not self.TG_CHAT_ID:
-                raise ValueError("Для публикации в Telegram нужно задать TG_TOKEN и TG_CHAT_ID")
-
-        # Загружаем prompts и schedules из config.yaml
+        # Далее — загрузка prompts и schedules из YAML
         yaml_path = Path(self.CONFIG_YAML_PATH)
         if yaml_path.exists():
             data = yaml.safe_load(yaml_path.read_text(encoding='utf-8'))
             prompts = data.get('prompts', {})
             if isinstance(prompts, dict):
                 self.PROMPT_TEXTS = prompts
+
             schedules_raw = data.get('schedules', [])
             parsed = []
             for item in schedules_raw:
@@ -125,6 +151,7 @@ class Settings(BaseSettings):
                 except Exception:
                     continue
             self.SCHEDULES = parsed
+
 
 # Единственный экземпляр настроек
 settings = Settings()

@@ -33,11 +33,13 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
+    # Консольный хэндлер
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
+    # Файловый хэндлер с ротацией по дате
     file_handler = TimedRotatingFileHandler(
         filename=os.path.join(logs_dir, "app.log"),
         when="midnight",
@@ -61,7 +63,10 @@ def process_immediate():
 
     # VK
     if settings.ENABLE_VK:
-        vk_sched = next((s for s in settings.SCHEDULES if s.module.lower() == "vk" and s.enabled), None)
+        vk_sched = next(
+            (s for s in settings.SCHEDULES if s.module.lower() == "vk" and s.enabled),
+            None
+        )
         if vk_sched:
             logger.info("[vk] Немедленная публикация для VK")
             try:
@@ -73,7 +78,10 @@ def process_immediate():
 
     # Telegram
     if settings.ENABLE_TG:
-        tg_sched = next((s for s in settings.SCHEDULES if s.module.lower() == "telegram" and s.enabled), None)
+        tg_sched = next(
+            (s for s in settings.SCHEDULES if s.module.lower() == "telegram" and s.enabled),
+            None
+        )
         if tg_sched:
             logger.info("[telegram] Немедленная публикация для Telegram")
             try:
@@ -89,17 +97,19 @@ def main():
     logger = logging.getLogger("main")
     logger.info("Запуск приложения SMMaker")
 
+    # Инициализируем наш Scheduler (он сам внутри конструктора запускает фоновые задачи)
     scheduler = Scheduler()
 
+    # Проверяем, есть ли активные расписания для VK или Telegram
     has_vk_schedule = any(s.module.lower() == "vk" and s.enabled for s in settings.SCHEDULES)
     has_tg_schedule = any(s.module.lower() == "telegram" and s.enabled for s in settings.SCHEDULES)
 
     if has_vk_schedule or has_tg_schedule:
         logger.info("Найдены активные расписания — запускаем Scheduler")
-        scheduler.start()
         try:
+            # Просто держим процесс живым, пока APScheduler работает в фоне
             while True:
-                pass  # keep the scheduler running
+                pass
         except (KeyboardInterrupt, SystemExit):
             logger.info("Остановка Scheduler по сигналу")
             scheduler.shutdown()

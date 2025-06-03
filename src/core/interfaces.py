@@ -3,8 +3,12 @@
 """
 interfaces.py
 
-Здесь определяются интерфейсы (абстрактные базовые классы) для генераторов и паблишеров.
-Каждый подкласс должен реализовать указанные методы.
+Здесь определяются абстрактные интерфейсы для:
+  1) Генераторов (LLM и image‐провайдеров)
+  2) Публикаторов (VK, Telegram, и т.д.)
+
+Каждый конкретный класс-реализация должен наследоваться от соответствующего интерфейса и
+реализовать все объявленные методы.
 """
 
 from abc import ABC, abstractmethod
@@ -15,91 +19,74 @@ from src.core.models import Post
 
 class GeneratorInterface(ABC):
     """
-    Интерфейс для генератора (LLM или другой нейросети).
+    Общий интерфейс для всех «генераторов» (текстовых LLM и image‐провайдеров).
+    Классы‐наследники обязаны реализовать оба метода, но для «чисто текстовых»
+    или «чисто image» провайдеров один из методов может бросать NotImplementedError.
     """
 
     @abstractmethod
-    def generate_text(self, prompt: str, model: str = None, temperature: float = None) -> Tuple[str, Dict]:
+    def generate_text(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None
+    ) -> Tuple[str, Dict]:
         """
         Генерирует текст по заданному prompt.
 
         Args:
-            prompt (str): текстовый запрос.
-            model (str, optional): конкретная модель для генерации (override).
-            temperature (float, optional): степень креативности (override).
+            prompt (str): строка‐запрос.
+            model (Optional[str]): при необходимости переопределить модель (override).
+            temperature (Optional[float]): степень креативности (override).
 
         Returns:
-            Tuple[str, Dict]: кортеж (сгенерированный текст, метаданные),
-                где метаданные включают ключи 'tokens' и 'cost'.
+            Tuple[str, Dict]:
+              - сгенерированный текст (str),
+              - словарь метаданных, например {'tokens': int, 'cost': float}.
         """
         raise NotImplementedError
 
-
     @abstractmethod
-    def generate_image(self, prompt: str, model: str = None) -> bytes:
+    def generate_image(
+        self,
+        prompt: str,
+        model: Optional[str] = None
+    ) -> bytes:
         """
         Генерирует изображение по заданному prompt.
 
         Args:
-            prompt (str): текстовый запрос для генерации изображения.
-            model (str, optional): конкретная модель для генерации (override).
+            prompt (str): строка‐описание картинки.
+            model (Optional[str]): при необходимости переопределить модель (override).
 
         Returns:
-            bytes: байты изображения (напрямую для отправки в соцсеть).
+            bytes: «сырые» байты изображения (PNG, JPEG и т.д.).
         """
         raise NotImplementedError
 
 
 class PublisherInterface(ABC):
     """
-    Интерфейс для паблишера (VK, Telegram и т.д.).
+    Интерфейс для «публикаторов» (VK, Telegram и т.д.).
+    Конкретный публикатор отвечает за то, чтобы взять объект Post и
+    отправить его «в сеть», вернув ссылку/ID опубликованного поста.
     """
 
     @abstractmethod
     def publish(self, post: Post) -> Optional[str]:
         """
-        Публикует контент (текст + опциональное изображение) в соответствующую соцсеть.
+        Публикует содержимое объекта Post в соответствующей социальной сети.
 
         Args:
-            post (Post): объект Post с полями:
-                - idea (строка, содержащая заголовок и текст статьи),
-                - image_bytes (байты, если есть иллюстрация).
+            post (Post): объект с полями:
+                - id (str)          — идентификатор публикации (из ScheduleConfig.id).
+                - title (str)       — заголовок/имя поста
+                - content (str)     — текст
+                - image_bytes (bytes) — изображение
+                - metadata (Dict)   — дополнительные данные (model, tokens, cost)
 
         Returns:
-            Optional[str]: URL опубликованного поста или None при неудаче.
+            Optional[str]: URL или уникальный идентификатор опубликованного поста.
+                           Если публикация не удалась, вернуть None или бросить исключение.
         """
         raise NotImplementedError
-
-
-def get_generator(name: str) -> GeneratorInterface:
-    """
-    Возвращает экземпляр генератора по имени:
-      - "chatgpt" → OpenAIGenerator
-      - "yandexgpt" → YandexGenerator (если реализован)
-    """
-    key = name.lower()
-    if key in ("chatgpt", "openai"):
-        from src.modules.generators.openai_generator import OpenAIGenerator
-        return OpenAIGenerator()
-    elif key in ("yandexgpt", "yandex"):
-        from src.modules.generators.yandex_generator import YandexGenerator
-        return YandexGenerator()
-    else:
-        raise ValueError(f"Unsupported generator: {name}")
-
-
-def get_publisher(name: str) -> PublisherInterface:
-    """
-    Возвращает экземпляр паблишера по имени:
-      - "vk" → VKPublisher
-      - "telegram" → TelegramPublisher
-    """
-    key = name.lower()
-    if key == "vk":
-        from src.modules.vk.vk_publisher import VKPublisher
-        return VKPublisher()
-    elif key in ("tg", "telegram"):
-        from src.modules.telegram.tg_publisher import TelegramPublisher
-        return TelegramPublisher()
-    else:
-        raise ValueError(f"Unsupported publisher module: {name}")

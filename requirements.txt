@@ -6,6 +6,7 @@ python-dotenv
 # Google Sheets API
 gspread
 google-auth
+google-api-python-client
 
 # Планировщик
 APScheduler

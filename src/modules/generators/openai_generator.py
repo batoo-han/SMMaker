@@ -3,14 +3,15 @@
 """
 openai_generator.py
 
-Реализация GeneratorInterface для OpenAI (ChatGPT и DALL·E), совместимая с openai>=1.0.0.
-Исправлено получение usage.total_tokens из объекта CompletionUsage вместо .get().
+Реализация GeneratorInterface для OpenAI (ChatGPT) через новый клиент openai-python v1+.
+
+Обновлено для совместимости с openai>=1.0.0:
+  - Вместо openai.ChatCompletion.create используется openai.chat.completions.create.
+  - Обработка параметров остаётся прежней.
 """
 
-import base64
 import logging
 import openai
-import requests
 from typing import Tuple, Dict, Optional
 
 from src.core.interfaces import GeneratorInterface
@@ -20,123 +21,87 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIGenerator(GeneratorInterface):
+    """
+    Генератор текстов через OpenAI Chat Completions API.
+    Методы:
+      - generate_text(prompt, model, temperature) → Tuple[str, Dict]
+      - generate_image(...) → NotImplementedError
+    """
+
     def __init__(self):
         api_key = settings.OPENAI_API_KEY
         if not api_key:
             raise ValueError("OPENAI_API_KEY не задан в settings")
         openai.api_key = api_key
 
-        self.text_model = settings.OPENAI_MODEL
+        # Модель и температура по умолчанию (берутся из настроек)
+        self.default_model = settings.OPENAI_MODEL
         try:
-            self.text_temperature = float(settings.OPENAI_TEMPERATURE)
+            self.default_temperature = float(settings.OPENAI_TEMPERATURE)
         except Exception:
-            self.text_temperature = 1.0  # используем 1.0 по умолчанию
-
-        self.image_model = settings.IMAGE_MODEL
+            self.default_temperature = 1.0
 
     def generate_text(
         self,
         prompt: str,
         model: Optional[str] = None,
         temperature: Optional[float] = None
-    ) -> Tuple[str, Dict]:
+    ) -> Tuple[Optional[str], Dict[str, Optional[float]]]:
         """
-        Генерирует текст через OpenAI Chat API (openai>=1.0.0).
-        Если модель не поддерживает параметр temperature, повторяем без него.
-        Возвращаем (text, meta), где meta содержит 'tokens' (int) и 'cost' (float).
+        Генерирует текст через OpenAI Chat Completions API.
+
+        :param prompt: строка-запрос (prompt). Если пустая, возвращает (None, {'tokens': None, 'cost': None}).
+        :param model:  имя модели (e.g., "gpt-4o" или "gpt-3.5-turbo"), переопределяет default_model.
+        :param temperature: температурный параметр, переопределяет default_temperature.
+        :return: (сгенерированный текст или None, meta), meta = {'tokens': usage_total, 'cost': None}.
         """
-        model_to_use = model or self.text_model
-        temp = temperature if temperature is not None else self.text_temperature
+        if not prompt or not prompt.strip():
+            return None, {"tokens": None, "cost": None}
 
-        def _chat_request(include_temp: bool):
-            kwargs = {
-                "model": model_to_use,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            if include_temp:
-                kwargs["temperature"] = temp
-            return openai.chat.completions.create(**kwargs)
+        prompt_stripped = prompt.strip()
+        model_to_use = model or self.default_model
+        temp = temperature if temperature is not None else self.default_temperature
 
-        # Первая попытка с параметром temperature
+        # Логирование первых 200 символов prompt
+        preview = (prompt_stripped[:200] + "...") if len(prompt_stripped) > 200 else prompt_stripped
+        logger.debug(
+            "[OpenAI] ChatCompletion (model=%s, temp=%.3f). Prompt preview: «%s»",
+            model_to_use, temp, preview
+        )
+
         try:
-            response = _chat_request(include_temp=True)
-        except openai.error.InvalidRequestError as e:
-            # Проверяем, связана ли ошибка с неподдержкой temperature
-            err_msg = ""
-            try:
-                err_data = e.args[0]
-                err_msg = err_data.get("error", {}).get("message", "") if isinstance(err_data, dict) else str(e)
-            except Exception:
-                err_msg = str(e)
-
-            if "Unsupported value: 'temperature'" in err_msg:
-                logger.warning("[OpenAI] Модель %s не поддерживает temperature=%s, повтор без этого параметра",
-                               model_to_use, temp)
-                try:
-                    response = _chat_request(include_temp=False)
-                except Exception as e2:
-                    logger.error(f"[OpenAI] Ошибка повторного вызова без temperature: {e2}")
-                    raise
-            else:
-                logger.error(f"[OpenAI] Ошибка при вызове chat.completions.create: {err_msg}")
-                raise
+            # Новый интерфейс: openai.chat.completions.create
+            response = openai.chat.completions.create(
+                model=model_to_use,
+                messages=[{"role": "user", "content": prompt_stripped}],
+                temperature=temp,
+                max_tokens=2048
+            )
         except Exception as e:
             logger.error(f"[OpenAI] Ошибка при вызове chat.completions.create: {e}")
-            raise
+            return None, {"tokens": None, "cost": None}
 
         # Извлекаем текст из ответа
         try:
-            message_obj = response.choices[0].message
-            text = message_obj.content
+            choice = response.choices[0]
+            text = choice.message.content
         except Exception as e:
             logger.error(f"[OpenAI] Не удалось извлечь текст из ответа: {e}")
-            raise
+            return None, {"tokens": None, "cost": None}
 
-        # Извлекаем usage.total_tokens из объекта CompletionUsage
+        # Извлекаем количество токенов использования
         try:
-            usage = response.usage  # это объект CompletionUsage
-            total_tokens = getattr(usage, "total_tokens", 0) or 0
+            usage = response.usage
+            total_tokens = usage.total_tokens if hasattr(usage, "total_tokens") else None
+            total_tokens = int(total_tokens) if total_tokens is not None else None
         except Exception:
-            total_tokens = 0
+            total_tokens = None
 
-        # Рассчитываем примерную стоимость
-        cost_per_1k = {
-            'gpt-4o': 0.03,
-            'gpt-4.5': 0.06,
-            'gpt-3.5-turbo': 0.002
-        }.get(model_to_use, 0.002)
-        cost = (total_tokens / 1000) * cost_per_1k
-
-        meta = {
-            'tokens': total_tokens,
-            'cost': round(cost, 6)
-        }
-        return text, meta
+        meta = {"tokens": total_tokens, "cost": None}
+        return text.strip(), meta
 
     def generate_image(self, prompt: str, model: Optional[str] = None) -> bytes:
         """
-        Генерация изображения через OpenAI Images API (DALL·E) в openai>=1.0.0.
-        Возвращает байты изображения (расшифрованные из base64).
+        Этот класс не поддерживает генерацию изображений.
         """
-        model_to_use = model or self.image_model
-
-        try:
-            response = openai.images.generate(
-                model=model_to_use,
-                prompt=prompt,
-                n=1,
-                size="1024x1024",
-                response_format="b64_json"
-            )
-        except Exception as e:
-            logger.error(f"[OpenAI] Ошибка при вызове images.generate: {e}")
-            raise
-
-        try:
-            b64_json = response.data[0].b64_json
-            image_data = base64.b64decode(b64_json)
-        except Exception as e:
-            logger.error(f"[OpenAI] Не удалось декодировать изображение: {e}")
-            raise
-
-        return image_data
+        raise NotImplementedError("OpenAIGenerator поддерживает только generate_text()")

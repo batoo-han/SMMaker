@@ -1,88 +1,117 @@
+# src/cache.py
+
 """
 cache.py
 
-Утилиты для кеширования:
-  - In-memory LRU-кэш через functools.lru_cache
-  - TTL-кэш для функций с указанием времени жизни
-  - Заглушка для подключения Redis-кеша (при наличии настроек)
+Простой модуль для кэширования результатов генерации текста и изображений.
+Используется для:
+  - Хранения текстовых ответов LLM по ключу (prompt + model).
+  - Хранения байт изображений по ключу (prompt + model).
+
+Кэш основан на файловой системе: для каждого ключа создаётся отдельный файл,
+имя которого — SHA256-хэш от строки "<тип>#<model>#<prompt>".
+Файлы для текстов сохраняются в папке cache/text/, для изображений — в cache/image/.
+
+Это позволяет при повторных вызовах с одинаковым prompt и model не отправлять
+запросы в API заново, а брать результат из локального хранилища.
 """
+
 import os
-import time
-from functools import lru_cache, wraps
-from collections import OrderedDict
+import hashlib
+import pickle
+from pathlib import Path
+from typing import Optional, Tuple
+
+# Папка для кэша (в корне проекта)
+_BASE_CACHE_DIR = Path("cache")
+_TEXT_CACHE_DIR = _BASE_CACHE_DIR / "text"
+_IMAGE_CACHE_DIR = _BASE_CACHE_DIR / "image"
+
+# Убедимся, что директории существуют
+for d in (_TEXT_CACHE_DIR, _IMAGE_CACHE_DIR):
+    os.makedirs(d, exist_ok=True)
 
 
-class TTLCache:
+def _make_key(type_prefix: str, model: str, prompt: str) -> str:
     """
-    Простой in-memory кеш с ограничением по размеру и TTL.
-
-    Attributes:
-        maxsize (int): максимальное число элементов в кеше
-        ttl (int): время жизни элементов в sek.
+    Формирует SHA256-хэш от строки "<type_prefix>#<model>#<prompt>".
+    type_prefix: "text" или "image".
     """
-    def __init__(self, maxsize: int = 128, ttl: int = 300):
-        self.maxsize = maxsize
-        self.ttl = ttl
-        self._cache: OrderedDict = OrderedDict()
+    key_string = f"{type_prefix}#{model}#{prompt}".encode("utf-8")
+    return hashlib.sha256(key_string).hexdigest()
 
-    def get(self, key):
-        """Получить значение из кеша или None, если отсутствует или устарело."""
-        if key in self._cache:
-            value, expires_at = self._cache.pop(key)
-            if expires_at >= time.time():
-                # Обновляем порядок для LRU
-                self._cache[key] = (value, expires_at)
-                return value
+
+def get_cached_text(model: str, prompt: str) -> Optional[str]:
+    """
+    Пытается получить из кэша ранее сгенерированный текст для данного model и prompt.
+    Если файл найден, возвращает строку, иначе — None.
+    """
+    key = _make_key("text", model, prompt)
+    cache_path = _TEXT_CACHE_DIR / f"{key}.pkl"
+    if not cache_path.exists():
         return None
 
-    def set(self, key, value):
-        """Установить значение в кеш с учётом TTL."""
-        expires_at = time.time() + self.ttl
-        if key in self._cache:
-            # Удаляем старую запись для обновления порядка
-            self._cache.pop(key)
-        elif len(self._cache) >= self.maxsize:
-            # Удаляем наименее недавно использованный элемент
-            self._cache.popitem(last=False)
-        self._cache[key] = (value, expires_at)
-
-    def decorator(self, fn=None, *, maxsize=None, ttl=None):
-        """
-        Декоратор для кеширования вызовов функции.
-
-        Usage:
-            cache = TTLCache(maxsize=256, ttl=600)
-
-            @cache.decorator
-            def expensive_func(...):
-                ...
-        """
-        if fn is None:
-            # Параметризованный декоратор
-            return lambda f: self.decorator(f, maxsize=maxsize, ttl=ttl)
-
-        @wraps(fn)
-        def wrapped(*args, **kwargs):
-            # Новый ключ на основе имени функции и аргументов
-            key = (fn.__name__, args, frozenset(kwargs.items()))
-            result = self.get(key)
-            if result is not None:
-                return result
-            result = fn(*args, **kwargs)
-            self.set(key, result)
-            return result
-
-        return wrapped
+    try:
+        with open(cache_path, "rb") as f:
+            text = pickle.load(f)
+            if isinstance(text, str):
+                return text
+    except Exception:
+        # Если файл повреждён или не удалось прочитать, удалим его
+        try:
+            cache_path.unlink()
+        except Exception:
+            pass
+    return None
 
 
-# Пример использования: декоратор LRU-кеша без TTL
-# @lru_cache(maxsize=128)
-def lru_cache_decorator(maxsize: int = 128):
-    """Возвращает декоратор functools.lru_cache с заданным размером."""
-    return lru_cache(maxsize=maxsize)
+def set_cached_text(model: str, prompt: str, text: str) -> None:
+    """
+    Сохраняет сгенерированный текст в кэш.
+    """
+    key = _make_key("text", model, prompt)
+    cache_path = _TEXT_CACHE_DIR / f"{key}.pkl"
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump(text, f)
+    except Exception:
+        # Если не удалось сохранить, просто пропускаем
+        pass
 
 
-# Инициализация глобального кеша (можно перенастроить через .env)
-CACHE_MAXSIZE = int(os.getenv('CACHE_MAXSIZE', 256))
-CACHE_TTL = int(os.getenv('CACHE_TTL', 600))
-cache = TTLCache(maxsize=CACHE_MAXSIZE, ttl=CACHE_TTL)
+def get_cached_image(model: str, prompt: str) -> Optional[bytes]:
+    """
+    Пытается получить из кэша ранее сгенерированное изображение (байты) для данного model и prompt.
+    Если файл найден, возвращает bytes, иначе — None.
+    """
+    key = _make_key("image", model, prompt)
+    cache_path = _IMAGE_CACHE_DIR / f"{key}.bin"
+    if not cache_path.exists():
+        return None
+
+    try:
+        with open(cache_path, "rb") as f:
+            img_bytes = f.read()
+            if isinstance(img_bytes, (bytes, bytearray)):
+                return img_bytes
+    except Exception:
+        # Если файл повреждён, удалим его
+        try:
+            cache_path.unlink()
+        except Exception:
+            pass
+    return None
+
+
+def set_cached_image(model: str, prompt: str, image_bytes: bytes) -> None:
+    """
+    Сохраняет байты изображения в кэш для данного model и prompt.
+    """
+    key = _make_key("image", model, prompt)
+    cache_path = _IMAGE_CACHE_DIR / f"{key}.bin"
+    try:
+        with open(cache_path, "wb") as f:
+            f.write(image_bytes)
+    except Exception:
+        # Если не удалось сохранить, пропускаем
+        pass

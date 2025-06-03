@@ -1,12 +1,25 @@
 # src/modules/vk/vk_publisher.py
 
-import os
+"""
+vk_publisher.py
+
+Реализация PublisherInterface для VK. Отвечает за публикацию объекта Post
+(текст + изображение) на стену ВКонтакте.
+
+Использует методы VK API:
+  1) photos.getWallUploadServer    — получить URL для загрузки изображения
+  2) photos.saveWallPhoto          — сохранить загружённое изображение на сервере VK
+  3) wall.post                     — опубликовать пост с текстом и прикреплённой фотографией
+
+Настройки берутся из src/config/settings.py:
+  - VK_TOKEN     — токен доступа (user или group)
+  - VK_OWNER_ID  — ID владельца стены (отрицательное для сообществ, положительное для пользователей)
+"""
+
+import json
 import logging
 import requests
 from typing import Optional
-
-import vk_api
-from vk_api.exceptions import ApiError
 
 from src.core.interfaces import PublisherInterface
 from src.core.models import Post
@@ -17,105 +30,155 @@ logger = logging.getLogger(__name__)
 
 class VKPublisher(PublisherInterface):
     """
-    Публикатор для ВКонтакте (группа).
-    Алгоритм:
-      1) Проверяем, что post.idea (текст) и post.image_bytes (байты картинки) непустые.
-      2) photos.getWallUploadServer(group_id=<pos_group_id>) → получаем upload_url.
-      3) Загрузка POST multipart: files={'photo': ('image.jpg', <bytes>, 'image/jpeg')}.
-      4) photos.saveWallPhoto(group_id=<pos_group_id>, photo=..., server=..., hash=...) → save_resp.
-      5) Формируем attachment = "photo{owner_id}_{media_id}[_access_key]".
-      6) wall.post(owner_id=-<group_id>, from_group=1, message=..., attachments=attachment).
-      7) Возвращаем URL опубликованного поста или None.
+    PublisherInterface для VK API.
+
+    При наличии post.image_bytes:
+      1) Запрос photos.getWallUploadServer для получения upload_url.
+      2) Загружаем байты изображения по этому URL.
+      3) Сохраняем фото методом photos.saveWallPhoto, получаем media_id и owner_id.
+      4) Формируем attachment в формате "photo{owner_id}_{media_id}".
+      5) Вызываем wall.post с текстом и attachment.
+
+    Если post.image_bytes пуст:
+      - Вызываем wall.post только с текстом.
+
+    Возвращает ID опубликованного поста в формате "<owner_id>_<post_id>" или None при ошибке.
     """
 
+    API_VERSION = "5.131"  # актуальная версия VK API
+
     def __init__(self):
-        token = os.getenv("VK_TOKEN") or settings.VK_TOKEN
+        token = settings.VK_TOKEN
+        owner_id = settings.VK_OWNER_ID
+
         if not token:
-            raise ValueError("VK_TOKEN не задан")
-        self.vk_session = vk_api.VkApi(token=token)
-        self.api = self.vk_session.get_api()
+            raise ValueError("VK_TOKEN не задан в settings")
+        if owner_id is None:
+            raise ValueError("VK_OWNER_ID не задан в settings")
 
-        raw_owner = os.getenv("VK_OWNER_ID") or str(settings.VK_OWNER_ID)
-        try:
-            owner_id_int = int(raw_owner)
-        except ValueError:
-            raise ValueError("VK_OWNER_ID должна быть целым числом (с минусом для группы)")
-        self.owner_id = owner_id_int
-
-        if self.owner_id >= 0:
-            raise ValueError("VK_OWNER_ID должен быть отрицательным числом (ID группы)")
-
-        # Для getWallUploadServer и saveWallPhoto требуем положительный group_id:
-        self.group_id = abs(self.owner_id)
+        self.token = token
+        self.owner_id = owner_id
+        self.base_url = "https://api.vk.com/method"
 
     def publish(self, post: Post) -> Optional[str]:
         """
-        Публикует пост (текст + изображение) в группу.
-        Если текст или изображение отсутствуют, возвращает None.
+        Публикует Post в VK.
+
+        :param post: объект Post с полями id, title, content, image_bytes, metadata
+        :return: строка "<owner_id>_<post_id>" при успехе или None при ошибке
         """
-        if not post.idea or not post.image_bytes:
-            logger.error("[vk] Невозможно опубликовать: текст или изображение отсутствует.")
+        try:
+            if post.image_bytes:
+                attachment = self._upload_photo(post.image_bytes)
+                if not attachment:
+                    return None
+                return self._post_wall(text=post.content, attachment=attachment)
+            else:
+                return self._post_wall(text=post.content)
+        except Exception as e:
+            logger.error(f"[VKPublisher] Ошибка при публикации: {e}")
             return None
+
+    def _upload_photo(self, image_bytes: bytes) -> Optional[str]:
+        """
+        Загружает изображение на сервер VK и возвращает attachment-строку.
+
+        :param image_bytes: байты изображения (PNG, JPEG)
+        :return: attachment в формате "photo{owner_id}_{media_id}" или None при ошибке
+        """
+        # 1) Получаем URL для загрузки
+        params = {
+            "access_token": self.token,
+            "v": self.API_VERSION,
+            "owner_id": self.owner_id,
+        }
+        try:
+            resp = requests.get(
+                f"{self.base_url}/photos.getWallUploadServer",
+                params=params,
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            upload_url = data["response"]["upload_url"]
+        except Exception as e:
+            logger.error(f"[VKPublisher] Не удалось получить upload_url: {e}")
+            return None
+
+        # 2) Загружаем изображение
+        files = {
+            "photo": ('image.jpg', image_bytes)
+        }
+        try:
+            upload_resp = requests.post(upload_url, files=files, timeout=60)
+            upload_resp.raise_for_status()
+            upload_data = upload_resp.json()
+            server = upload_data.get("server")
+            photo = upload_data.get("photo")
+            photo_hash = upload_data.get("hash")
+            if not (server and photo and photo_hash):
+                raise ValueError("В ответе upload-сервера отсутствуют server/photo/hash")
+        except Exception as e:
+            logger.error(f"[VKPublisher] Ошибка при загрузке изображения на upload_server: {e}")
+            return None
+
+        # 3) Сохраняем фото методом photos.saveWallPhoto
+        save_params = {
+            "access_token": self.token,
+            "v": self.API_VERSION,
+            "owner_id": self.owner_id,
+            "server": server,
+            "photo": photo,
+            "hash": photo_hash
+        }
+        try:
+            save_resp = requests.post(
+                f"{self.base_url}/photos.saveWallPhoto",
+                data=save_params,
+                timeout=30
+            )
+            save_resp.raise_for_status()
+            save_data = save_resp.json()
+            saved = save_data["response"][0]
+            photo_owner_id = saved["owner_id"]
+            media_id = saved["id"]
+        except Exception as e:
+            logger.error(f"[VKPublisher] Не удалось сохранить фото через photos.saveWallPhoto: {e}")
+            return None
+
+        # 4) Формируем строку attachment
+        return f"photo{photo_owner_id}_{media_id}"
+
+    def _post_wall(self, text: str, attachment: Optional[str] = None) -> Optional[str]:
+        """
+        Публикует запись на стену VK.
+
+        :param text: текст поста
+        :param attachment: строка attachment для фото, или None
+        :return: строка "<owner_id>_<post_id>" при успехе или None при ошибке
+        """
+        params = {
+            "access_token": self.token,
+            "v": self.API_VERSION,
+            "owner_id": self.owner_id,
+            "message": text or "",
+        }
+        if attachment:
+            params["attachments"] = attachment
 
         try:
-            # 1) Получаем upload_url для фотографии
-            upload_resp = self.api.photos.getWallUploadServer(group_id=self.group_id)
-            upload_url = upload_resp.get("upload_url")
-            if not upload_url:
-                logger.error(f"[vk] Не удалось получить upload_url: {upload_resp}")
-                return None
-
-            # 2) Загружаем байты изображения multipart-запросом
-            files = {
-                "photo": ("image.jpg", post.image_bytes, "image/jpeg")
-            }
-            upload_result = requests.post(upload_url, files=files).json()
-            logger.debug(f"[vk] upload_result: {upload_result}")
-
-            # 3) Сохраняем фотографию в альбом стены группы
-            save_resp = self.api.photos.saveWallPhoto(
-                group_id=self.group_id,
-                photo=upload_result.get("photo"),
-                server=upload_result.get("server"),
-                hash=upload_result.get("hash"),
+            resp = requests.post(
+                f"{self.base_url}/wall.post",
+                data=params,
+                timeout=30
             )
-            logger.debug(f"[vk] save_resp: {save_resp}")
-
-            if not save_resp or not isinstance(save_resp, list):
-                logger.error(f"[vk] Не удалось сохранить фото: {save_resp}")
-                return None
-
-            photo_info = save_resp[0]
-            media_id_vk = photo_info.get("id")        # ID фото
-            owner_vk = photo_info.get("owner_id")    # отрицательный ID группы
-            access_key = photo_info.get("access_key")  # возможно None
-
-            # 4) Формируем строку attachments
-            if access_key:
-                attachment = f"photo{owner_vk}_{media_id_vk}_{access_key}"
-            else:
-                attachment = f"photo{owner_vk}_{media_id_vk}"
-
-            # 5) Публикуем пост с текстом и фото
-            publish_params = {
-                "owner_id": self.owner_id,  # отрицательный ID группы
-                "from_group": 1,
-                "message": post.idea,
-                "attachments": attachment,
-            }
-            response = self.api.wall.post(**publish_params)
-            post_id = response.get("post_id")
-            if not post_id:
-                logger.error(f"[vk] wall.post вернул без post_id: {response}")
-                return None
-
-            url = f"https://vk.com/wall{self.owner_id}_{post_id}"
-            logger.info(f"[vk] Пост опубликован: {url}")
-            return url
-
-        except ApiError as e:
-            logger.error(f"[vk] Ошибка VK API при публикации: {e}")
-            return None
+            resp.raise_for_status()
+            result = resp.json()
+            if "error" in result:
+                err = result["error"]
+                raise ValueError(f"VK API error {err.get('error_code')}: {err.get('error_msg')}")
+            post_id = result["response"]["post_id"]
+            return f"{self.owner_id}_{post_id}"
         except Exception as e:
-            logger.error(f"[vk] Неожиданная ошибка при публикации в VK: {e}")
+            logger.error(f"[VKPublisher] Ошибка при вызове wall.post: {e}")
             return None
