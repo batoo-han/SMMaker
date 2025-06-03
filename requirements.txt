@@ -1,0 +1,35 @@
+# Конфигурация и валидация
+pydantic
+pydantic-settings
+python-dotenv
+
+# Google Sheets API
+gspread
+google-auth
+
+# Планировщик
+APScheduler
+SQLAlchemy
+
+# HTTP-запросы
+requests
+
+# OpenAI API и эмбеддинги
+openai
+
+# Векторная БД Chroma
+chromadb
+
+# Telegram (раскомментируйте при необходимости)
+python-telegram-bot
+
+# VK (раскомментируйте при необходимости)
+vk_api
+
+# тесты
+pytest
+
+# Для загрузки YAML-конфигураций
+pyyaml
+
+pytz
