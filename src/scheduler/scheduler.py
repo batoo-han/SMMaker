@@ -5,7 +5,11 @@ scheduler.py
 
 Основной модуль планировщика. Использует APScheduler для запуска задач по расписанию.
 Обрабатывает публикации для VK и Telegram, обновляет Google Sheets и сохраняет данные в VectorDB.
-Публикация в любую сеть выполняется только если успешно сгенерированы и текст, и изображение.
+
+Теперь для генерации изображения используется отдельный шаблон из PROMPT_TEXTS:
+  - Для каждого schedule.prompt_key ищем ключ "{prompt_key}_image" в PROMPT_TEXTS.
+  - Если такой шаблон найден, подставляем туда {idea}.
+  - Иначе используем сгенерированный текст в качестве промпта для изображения.
 """
 
 import logging
@@ -21,35 +25,30 @@ from src.modules import get_publisher, get_generator
 from src.vector_db.vector_client import VectorClient
 from src.sheets.sheets_client import SheetsClient
 
-logger = logging.getLogger(__name__)
+from io import BytesIO
+from PIL import Image
 
-# Временная зона Московского времени
+logger = logging.getLogger(__name__)
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
 
 def publish_for_vk(schedule: ScheduleConfig):
-    """
-    Публикация для VK: берёт первую строку со статусом "ожидание" из Google Sheets,
-    генерирует текст и изображение, публикует во VK, сохраняет в VectorDB и обновляет
-    строку в Google Sheets со всеми нужными полями, включая полную ссылку на пост.
-    Публикация происходит только если и текст, и изображение успешно сгенерированы.
-    """
+    module = "vk"
     try:
         sheets = SheetsClient()
         row_idx, row_data = sheets.get_next_post(sheet_name=settings.VK_SHEETS_TAB)
-        if row_idx is None or row_data is None:
-            logger.info("[vk] Нет записей со status='ожидание'")
+        if row_idx is None:
+            logger.info(f"[{module}] Нет записей со status='ожидание'")
             return
     except Exception as e:
-        logger.error(f"[vk] Ошибка доступа к Google Sheets: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка доступа к Google Sheets: {e}", exc_info=True)
         return
 
     topic = row_data.get("idea", "").strip()
     if not topic:
-        logger.error("[vk] В строке нет поля 'idea'")
+        logger.error(f"[{module}] В строке нет поля 'idea'")
         return
 
-    # Получаем последний текст из VectorDB, чтобы использовать как пример
     try:
         vector_client = VectorClient(
             persist_directory=settings.CHROMA_PERSIST_DIR,
@@ -58,34 +57,34 @@ def publish_for_vk(schedule: ScheduleConfig):
         )
         last_vk = vector_client.get_last_by_network("vk") or ""
     except Exception as e:
-        logger.error(f"[vk] Ошибка доступа к ChromaDB: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка доступа к ChromaDB: {e}", exc_info=True)
         return
 
-    # Формируем prompt по шаблону
     prompt_key_vk = f"{schedule.prompt_key}_vk"
     template = settings.PROMPT_TEXTS.get(prompt_key_vk) or settings.PROMPT_TEXTS.get(schedule.prompt_key, "")
     if not template:
-        logger.error(f"[vk] Шаблон промпта '{prompt_key_vk}' и '{schedule.prompt_key}' не найдены.")
+        logger.error(f"[{module}] Шаблон '{prompt_key_vk}' и '{schedule.prompt_key}' не найдены.")
         return
 
     prompt = template.replace("{idea}", topic).replace("{example}", last_vk)
 
-    # Выбираем текстовый генератор в зависимости от schedule.generator
-    ai_name = getattr(schedule, "generator", "ChatGPT")
-    ai_key = ai_name.strip().lower()
-    if ai_key in ("chatgpt", "openai"):
+    text_key = schedule.generator.strip().lower()
+    if text_key in ("chatgpt", "openai", "openai-text"):
         text_model = settings.OPENAI_MODEL
         text_temperature = settings.OPENAI_TEMPERATURE
-        text_generator = get_generator("openai-text")
-    elif ai_key in ("yandexgpt", "yandex"):
+    elif text_key in ("yandexgpt", "yandex"):
         text_model = settings.YANDEXGPT_MODEL
         text_temperature = settings.YANDEXGPT_TEMPERATURE
-        text_generator = get_generator("yandex")
     else:
-        logger.error(f"[vk] Неподдерживаемый текстовый генератор: {ai_name}")
+        logger.error(f"[{module}] Неподдерживаемый текстовый генератор: {schedule.generator}")
         return
 
-    # Генерируем текст
+    try:
+        text_generator = get_generator(text_key)
+    except ValueError as e:
+        logger.error(f"[{module}] {e}", exc_info=True)
+        return
+
     try:
         generated_text, meta = text_generator.generate_text(
             prompt=prompt,
@@ -93,37 +92,60 @@ def publish_for_vk(schedule: ScheduleConfig):
             temperature=text_temperature,
         )
     except Exception as e:
-        logger.error(f"[vk] Ошибка при генерации текста: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при генерации текста: {e}", exc_info=True)
         return
 
     if not generated_text:
-        logger.error("[vk] Генерация текста вернула пустой результат, публикация отменена")
+        logger.error(f"[{module}] Генерация текста вернула пустой результат, публикация отменена")
         return
 
-    # Выбираем генератор изображений
-    image_prompt = generated_text
-    image_network_key = settings.IMAGE_NETWORK.strip().lower()
+    # Определяем промпт для изображения: ищем шаблон "{prompt_key}_image"
+    image_prompt_key = f"{schedule.prompt_key}_vk_image"
+    image_template = settings.PROMPT_TEXTS.get(image_prompt_key)
+    if image_template:
+        image_prompt = image_template.replace("{idea}", topic)
+        logger.debug(f"[{module}] Использован шаблон для изображения: '{image_prompt_key}' → {image_prompt[:60]}...")
+    else:
+        image_prompt = generated_text
+        logger.debug(f"[{module}] Шаблон для изображения не найден, используется сгенерированный текст")
+
+    if schedule.image_generator:
+        img_key = schedule.image_generator.strip().lower()
+    else:
+        img_key = settings.IMAGE_NETWORK.strip().lower()
+
     try:
-        image_generator = get_generator(image_network_key)
-    except ValueError:
-        logger.error(f"[vk] Неподдерживаемый IMAGE_NETWORK: {settings.IMAGE_NETWORK}")
+        image_generator = get_generator(img_key)
+    except ValueError as e:
+        logger.error(f"[{module}] {e}", exc_info=True)
         return
 
-    image_model = settings.IMAGE_MODEL
     try:
         image_bytes = image_generator.generate_image(
             prompt=image_prompt,
-            model=image_model,
+            model=settings.IMAGE_MODEL,
         )
     except Exception as e:
-        logger.error(f"[vk] Ошибка при генерации изображения: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при генерации изображения: {e}", exc_info=True)
         return
 
     if not image_bytes:
-        logger.error("[vk] Генерация изображения вернула пустой результат, публикация отменена")
+        logger.error(f"[{module}] Генерация изображения вернула пустой результат, публикация отменена")
         return
 
-    # Формируем объект Post и публикуем во VK
+
+    # Уменьшаем изображение
+    TARGET_WIDTH_VK = 640
+    TARGET_HEIGHT_VK = 480
+
+    logger.debug(f"[{module}] Уменьшаем изображение")
+    orig_img = Image.open(BytesIO(image_bytes))
+    orig_img.thumbnail((TARGET_WIDTH_VK, TARGET_HEIGHT_VK), Image.LANCZOS)
+    buf = BytesIO()
+    orig_img.save(buf, format="JPEG", quality=85)
+    buf.seek(0)
+    image_bytes = buf.read()
+
     post = Post(
         id=schedule.id,
         title=f"{schedule.id}_{datetime.now(MOSCOW_TZ).strftime('%Y%m%d_%H%M%S')}",
@@ -138,21 +160,16 @@ def publish_for_vk(schedule: ScheduleConfig):
 
     try:
         publisher = get_publisher("vk")
-        raw_vk_id = publisher.publish(post)  # Вернёт строку вида "<owner_id>_<post_id>"
+        raw_vk_id = publisher.publish(post)
         if not raw_vk_id:
-            logger.error("[vk] Публикация вернула пустой URL/ID")
+            logger.error(f"[{module}] Публикация вернула пустой ID")
             return
-        # Преобразуем "<owner_id>_<post_id>" в полную ссылку
-        try:
-            owner_id, post_id = raw_vk_id.split("_", 1)
-            full_vk_url = f"https://vk.com/wall{owner_id}_{post_id}"
-        except Exception:
-            full_vk_url = raw_vk_id  # если не в формате, оставляем как есть
+        owner_id, post_id = raw_vk_id.split("_", 1)
+        full_vk_url = f"https://vk.com/wall{owner_id}_{post_id}"
     except Exception as e:
-        logger.error(f"[vk] Ошибка при публикации в VK: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при публикации в VK: {e}", exc_info=True)
         return
 
-    # Сохраняем запись в VectorDB
     try:
         vector_client.add_post(
             network="vk",
@@ -162,13 +179,12 @@ def publish_for_vk(schedule: ScheduleConfig):
             metadata=post.metadata,
         )
     except Exception as e:
-        logger.error(f"[vk] Ошибка при сохранении в VectorDB: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при сохранении в VectorDB: {e}", exc_info=True)
 
-    # Обновляем Google Sheets всеми необходимыми полями
     try:
         scheduled_str = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S")
         status = "выполнено"
-        ai_used = ai_name
+        ai_used = schedule.generator
         model_used = text_model
         tokens = meta.get("tokens", "")
         cost = meta.get("cost", "")
@@ -182,35 +198,29 @@ def publish_for_vk(schedule: ScheduleConfig):
             url=full_vk_url,
             ai=ai_used,
             model=model_used,
-            notes=notes
+            notes=notes,
         )
     except Exception as e:
-        logger.error(f"[vk] Ошибка при обновлении Google Sheets: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при обновлении Google Sheets: {e}", exc_info=True)
 
 
 def publish_for_telegram(schedule: ScheduleConfig):
-    """
-    Публикация для Telegram: берёт первую строку со статусом "ожидание" из Google Sheets,
-    генерирует текст и изображение, публикует в Telegram, сохраняет в VectorDB и обновляет
-    строку в Google Sheets со всеми нужными полями, включая полную ссылку.
-    Публикация происходит только если сгенерированы и текст, и изображение.
-    """
+    module = "telegram"
     try:
         sheets = SheetsClient()
         row_idx, row_data = sheets.get_next_post(sheet_name=settings.TG_SHEETS_TAB)
-        if row_idx is None or row_data is None:
-            logger.info("[telegram] Нет записей со status='ожидание'")
+        if row_idx is None:
+            logger.info(f"[{module}] Нет записей со status='ожидание'")
             return
     except Exception as e:
-        logger.error(f"[telegram] Ошибка доступа к Google Sheets: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка доступа к Google Sheets: {e}", exc_info=True)
         return
 
     topic = row_data.get("idea", "").strip()
     if not topic:
-        logger.error("[telegram] В строке нет поля 'idea'")
+        logger.error(f"[{module}] В строке нет поля 'idea'")
         return
 
-    # Получаем последний текст из VectorDB
     try:
         vector_client = VectorClient(
             persist_directory=settings.CHROMA_PERSIST_DIR,
@@ -219,34 +229,34 @@ def publish_for_telegram(schedule: ScheduleConfig):
         )
         last_tg = vector_client.get_last_by_network("telegram") or ""
     except Exception as e:
-        logger.error(f"[telegram] Ошибка доступа к ChromaDB: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка доступа к ChromaDB: {e}", exc_info=True)
         return
 
-    # Формируем prompt по шаблону
     prompt_key_tg = f"{schedule.prompt_key}_telegram"
     template = settings.PROMPT_TEXTS.get(prompt_key_tg) or settings.PROMPT_TEXTS.get(schedule.prompt_key, "")
     if not template:
-        logger.error(f"[telegram] Шаблон промпта '{prompt_key_tg}' и '{schedule.prompt_key}' не найдены.")
+        logger.error(f"[{module}] Шаблон '{prompt_key_tg}' и '{schedule.prompt_key}' не найдены.")
         return
 
     prompt = template.replace("{idea}", topic).replace("{example}", last_tg)
 
-    # Выбираем текстовый генератор
-    ai_name = getattr(schedule, "generator", "ChatGPT")
-    ai_key = ai_name.strip().lower()
-    if ai_key in ("chatgpt", "openai"):
+    text_key = schedule.generator.strip().lower()
+    if text_key in ("chatgpt", "openai", "openai-text"):
         text_model = settings.OPENAI_MODEL
         text_temperature = settings.OPENAI_TEMPERATURE
-        text_generator = get_generator("openai-text")
-    elif ai_key in ("yandexgpt", "yandex"):
+    elif text_key in ("yandexgpt", "yandex"):
         text_model = settings.YANDEXGPT_MODEL
         text_temperature = settings.YANDEXGPT_TEMPERATURE
-        text_generator = get_generator("yandex")
     else:
-        logger.error(f"[telegram] Неподдерживаемый текстовый генератор: {ai_name}")
+        logger.error(f"[{module}] Неподдерживаемый текстовый генератор: {schedule.generator}")
         return
 
-    # Генерируем текст
+    try:
+        text_generator = get_generator(text_key)
+    except ValueError as e:
+        logger.error(f"[{module}] {e}", exc_info=True)
+        return
+
     try:
         generated_text, meta = text_generator.generate_text(
             prompt=prompt,
@@ -254,37 +264,58 @@ def publish_for_telegram(schedule: ScheduleConfig):
             temperature=text_temperature,
         )
     except Exception as e:
-        logger.error(f"[telegram] Ошибка при генерации текста: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при генерации текста: {e}", exc_info=True)
         return
 
     if not generated_text:
-        logger.error("[telegram] Генерация текста вернула пустой результат, публикация отменена")
+        logger.error(f"[{module}] Генерация текста вернула пустой результат, публикация отменена")
         return
 
-    # Выбираем генератор изображений
-    image_prompt = generated_text
-    image_network_key = settings.IMAGE_NETWORK.strip().lower()
+    image_prompt_key = f"{schedule.prompt_key}_telegram_image"
+    image_template = settings.PROMPT_TEXTS.get(image_prompt_key)
+    if image_template:
+        image_prompt = image_template.replace("{idea}", topic)
+        logger.debug(f"[{module}] Использован шаблон для изображения: '{image_prompt_key}' → {image_prompt[:60]}...")
+    else:
+        image_prompt = generated_text
+        logger.debug(f"[{module}] Шаблон для изображения не найден, используется сгенерированный текст")
+
+    if schedule.image_generator:
+        img_key = schedule.image_generator.strip().lower()
+    else:
+        img_key = settings.IMAGE_NETWORK.strip().lower()
+
     try:
-        image_generator = get_generator(image_network_key)
-    except ValueError:
-        logger.error(f"[telegram] Неподдерживаемый IMAGE_NETWORK: {settings.IMAGE_NETWORK}")
+        image_generator = get_generator(img_key)
+    except ValueError as e:
+        logger.error(f"[{module}] {e}", exc_info=True)
         return
 
-    image_model = settings.IMAGE_MODEL
     try:
         image_bytes = image_generator.generate_image(
             prompt=image_prompt,
-            model=image_model,
+            model=settings.IMAGE_MODEL,
         )
     except Exception as e:
-        logger.error(f"[telegram] Ошибка при генерации изображения: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при генерации изображения: {e}", exc_info=True)
         return
 
     if not image_bytes:
-        logger.error("[telegram] Генерация изображения вернула пустой результат, публикация отменена")
+        logger.error(f"[{module}] Генерация изображения вернула пустой результат, публикация отменена")
         return
 
-    # Формируем Post и публикуем в Telegram
+    # Уменьшаем изображение
+    TARGET_WIDTH_TG = 640
+    TARGET_HEIGHT_TG = 480
+
+    logger.debug(f"[{module}] Уменьшаем изображение")
+    orig_img = Image.open(BytesIO(image_bytes))
+    orig_img.thumbnail((TARGET_WIDTH_TG, TARGET_HEIGHT_TG), Image.LANCZOS)
+    buf = BytesIO()
+    orig_img.save(buf, format="JPEG", quality=85)
+    buf.seek(0)
+    image_bytes = buf.read()
+
     post = Post(
         id=schedule.id,
         title=f"{schedule.id}_{datetime.now(MOSCOW_TZ).strftime('%Y%m%d_%H%M%S')}",
@@ -299,21 +330,19 @@ def publish_for_telegram(schedule: ScheduleConfig):
 
     try:
         publisher = get_publisher("telegram")
-        raw_tg_id = publisher.publish(post)  # Вернёт message_id как строку
+        raw_tg_id = publisher.publish(post)
         if not raw_tg_id:
-            logger.error("[telegram] Публикация вернула пустой URL/ID")
+            logger.error(f"[{module}] Публикация вернула пустой ID")
             return
-        # Преобразуем message_id в полную ссылку
         tg_username = getattr(settings, "TG_CHAT_USERNAME", "").strip()
         if tg_username:
             full_tg_url = f"https://t.me/{tg_username}/{raw_tg_id}"
         else:
             full_tg_url = raw_tg_id
     except Exception as e:
-        logger.error(f"[telegram] Ошибка при публикации в Telegram: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при публикации в Telegram: {e}", exc_info=True)
         return
 
-    # Сохраняем запись в VectorDB
     try:
         vector_client.add_post(
             network="telegram",
@@ -323,13 +352,12 @@ def publish_for_telegram(schedule: ScheduleConfig):
             metadata=post.metadata,
         )
     except Exception as e:
-        logger.error(f"[telegram] Ошибка при сохранении в VectorDB: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при сохранении в VectorDB: {e}", exc_info=True)
 
-    # Обновляем Google Sheets всеми необходимыми полями
     try:
         scheduled_str = datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S")
         status = "выполнено"
-        ai_used = ai_name
+        ai_used = schedule.generator
         model_used = text_model
         tokens = meta.get("tokens", "")
         cost = meta.get("cost", "")
@@ -343,16 +371,16 @@ def publish_for_telegram(schedule: ScheduleConfig):
             url=full_tg_url,
             ai=ai_used,
             model=model_used,
-            notes=notes
+            notes=notes,
         )
     except Exception as e:
-        logger.error(f"[telegram] Ошибка при обновлении Google Sheets: {e}", exc_info=True)
+        logger.error(f"[{module}] Ошибка при обновлении Google Sheets: {e}", exc_info=True)
 
 
 class Scheduler:
     """
     Обёртка над APScheduler: при инициализации создаёт расписания для всех активных задач
-    из settings.SCHEDULES. Закрытие через shutdown().
+    из settings.SCHEDULES.
     """
 
     def __init__(self):
@@ -371,7 +399,7 @@ class Scheduler:
                     trigger=trigger,
                     args=[schedule],
                     id=f"vk_{schedule.id}",
-                    replace_existing=True
+                    replace_existing=True,
                 )
                 logger.info(f"[Scheduler] Добавлено задание VK '{schedule.id}' с cron '{schedule.cron}'")
             elif module_key == "telegram":
@@ -380,13 +408,14 @@ class Scheduler:
                     trigger=trigger,
                     args=[schedule],
                     id=f"tg_{schedule.id}",
-                    replace_existing=True
+                    replace_existing=True,
                 )
                 logger.info(f"[Scheduler] Добавлено задание Telegram '{schedule.id}' с cron '{schedule.cron}'")
             else:
-                logger.warning(f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'")
+                logger.warning(
+                    f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'"
+                )
 
-        # Запускаем планировщик
         self.scheduler.start()
         logger.info("[Scheduler] Планировщик запущен")
 

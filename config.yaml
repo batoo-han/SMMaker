@@ -71,8 +71,8 @@ prompts:
     Проведи SEO оптимизацию.
     
     Ответь в формате:
-    <Заголовок>
-    <текст статьи в нескольких абзацах>
+    Заголовок
+    текст статьи в нескольких абзацах
 
 #    Пиши сразу в разметке HTML.
 #    Можно использовать только HTML-теги: <b>, <i>,<u>, <s>, <br>, <blockquote>, <code>,<a>, <ul>, <ol>, <li>
@@ -88,7 +88,7 @@ prompts:
   # Шаблон иллюстрации для VK
   post_intro_vk_image: |
     Ты крутой, креативный иллюстратор.
-    Создай иллюстрацию для статьи ВКонтакте на тему «{idea}».
+    Создай иллюстрацию для статьи на тему «{idea}».
     Стиль - IT технологии, нейросети, город будущего.
   #Не используй никаких подписей и торговых знаков в иллюстрации.
 
@@ -149,8 +149,8 @@ prompts:
     Проведи SEO оптимизацию.
     
     Ответь в формате:
-    <Заголовок>
-    <текст статьи в нескольких абзацах>
+    Заголовок
+    текст статьи в нескольких абзацах
     
 
 #ШАГ 3. В конце поста напишите заключительную фразу, которая подводит итог. Используйте одну из этих формулировок:
@@ -176,17 +176,20 @@ prompts:
 #   enabled    — true/false
 #   prompt_key — ключ, по которому брать шаблон из prompts
 #   generator  - генеративная сеть: OpenAI, YandexGPT и т.д.
+#   image_generator  - генеративная сеть для изображений: dalle, fusionbrain и т.д.
 schedules:
   - id: vk_job1
     module: vk
-    cron: "17 20 * * *"        # Ежедневно в 09:00 МСК публикуем в VK
+    cron: "10 18 * * *"        # Ежедневно в 09:00 МСК публикуем в VK
     enabled: true
     prompt_key: post_intro
-    generator: YandexGPT
+    generator: OpenAI
+    image_generator: fusionbrain
 
   - id: tg_job1
     module: telegram
-    cron: "18 20 * * *"       # Ежедневно в 10:00 МСК публикуем в Telegram
+    cron: "11 18 * * *"       # Ежедневно в 10:00 МСК публикуем в Telegram
     enabled: true
     prompt_key: post_intro
-    generator: YandexGPT
+    generator: OpenAI
+    image_generator: fusionbrain

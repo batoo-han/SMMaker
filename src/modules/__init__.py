@@ -16,7 +16,7 @@ from src.modules.generators.yandex_generator import YandexGenerator
 from src.modules.image_generators.openai_image_generator import OpenAIImageGenerator
 from src.modules.image_generators.fusionbrain_image_generator import FusionBrainImageGenerator
 
-# Публикаторы (оставляем без изменений, если они были)
+# Публикаторы
 from src.modules.vk.vk_publisher import VKPublisher
 from src.modules.telegram.tg_publisher import TelegramPublisher
 
@@ -25,34 +25,24 @@ def get_generator(name: str) -> Any:
     """
     Возвращает экземпляр генератора по ключу `name`.
 
-    Ключи для текстовых генераторов:
-      - "openai" или "chatgpt"       → OpenAIGenerator
-      - "yandex" или "yandexgpt"     → YandexGenerator
+    Текстовые генераторы:
+      - "openai", "openai-text" или "chatgpt"  → OpenAIGenerator
+      - "yandex" или "yandexgpt"              → YandexGenerator
 
-    Ключи для image-генераторов:
-      - "openai-image" или "openai"  → OpenAIImageGenerator
-      - "fusionbrain"                → FusionBrainImageGenerator
-
-    Замечание: если вы вызываете get_generator("openai") в контексте текcта,
-    лучше использовать "chatgpt" или "openai-text", чтобы не было путаницы.
-    Однако, по умолчанию "openai" тоже вернёт OpenAIImageGenerator.
-
-    :param name: строка-ключ провайдера
-    :return: экземпляр класса, у которого будут методы generate_text() или generate_image().
-    :raises: ValueError, если ключ не поддерживается.
+    Image-генераторы:
+      - "dall-e", "dalle" или "openai-image"  → OpenAIImageGenerator
+      - "fusionbrain"                         → FusionBrainImageGenerator
     """
     key = name.strip().lower()
 
-    # -------- Текстовые генераторы --------
-    if key in ("openai-text", "chatgpt"):
+    # ----- Текстовые генераторы -----
+    if key in ("openai", "openai-text", "chatgpt"):
         return OpenAIGenerator()
     if key in ("yandex", "yandexgpt"):
         return YandexGenerator()
 
-    # -------- Image-генераторы --------
-    # Чтобы не ломать обратную совместимость:
-    # если name = "openai", возвращаем OpenAIImageGenerator
-    if key in ("openai-image", "openai"):
+    # ----- Image-генераторы -----
+    if key in ("dall-e", "dalle", "openai-image"):
         return OpenAIImageGenerator()
     if key == "fusionbrain":
         return FusionBrainImageGenerator()
@@ -65,9 +55,6 @@ def get_publisher(name: str) -> Any:
     Возвращает экземпляр публикатора по имени:
       - "vk"       → VKPublisher
       - "telegram" или "tg" → TelegramPublisher
-
-    :param name: строка-ключ публикатора
-    :return: экземпляр класса Publisher
     """
     key = name.strip().lower()
     if key == "vk":
