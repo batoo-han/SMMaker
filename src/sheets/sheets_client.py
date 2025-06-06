@@ -98,8 +98,11 @@ class SheetsClient:
 
     def get_next_post(self, sheet_name: str) -> Tuple[Optional[int], Optional[Dict[str, str]]]:
         """
-        Ищет в указанном листе первую строку, где колонка "status" == "ожидание".
-        Возвращает (row_number, row_data) или (None, None).
+        Ищет в указанном листе первую строку, где колонка "status" равна
+        "ожидание". Если такая строка найдена, возвращает кортеж ``(Post,
+        row_index)``, где ``Post`` — собранный из данных строки объект, а
+        ``row_index`` — её номер в таблице. Если подходящих строк нет,
+        возвращает ``(None, None)``.
         """
         try:
             sheet = self._open_sheet(sheet_name)
