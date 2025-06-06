@@ -378,50 +378,63 @@ def publish_for_telegram(schedule: ScheduleConfig):
 
 
 class Scheduler:
-    """
-    Обёртка над APScheduler: при инициализации создаёт расписания для всех активных задач
-    из settings.SCHEDULES.
-    """
+    """Простая обёртка над APScheduler."""
 
     def __init__(self):
+        # Планировщик не стартует автоматически, его запускают явно через start()
         self.scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 
+    def add_schedule(self, schedule: ScheduleConfig) -> None:
+        """Добавляет одно расписание в APScheduler."""
+        module_key = schedule.module.strip().lower()
+        trigger = CronTrigger.from_crontab(schedule.cron, timezone=MOSCOW_TZ)
+
+        if module_key == "vk":
+            job_func = publish_for_vk
+        elif module_key == "telegram":
+            job_func = publish_for_telegram
+        else:
+            logger.warning(
+                f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'"
+            )
+            return
+
+        self.scheduler.add_job(
+            func=job_func,
+            trigger=trigger,
+            args=[schedule],
+            id=schedule.id,
+            replace_existing=True,
+        )
+
+    def remove_schedule(self, job_id: str) -> None:
+        """Удаляет задание по идентификатору."""
+        try:
+            self.scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+    def start(self) -> None:
+        """Регистрирует задания из настроек и запускает планировщик."""
         for schedule in settings.SCHEDULES:
-            if not schedule.enabled:
-                continue
-
-            module_key = schedule.module.strip().lower()
-            trigger = CronTrigger.from_crontab(schedule.cron, timezone=MOSCOW_TZ)
-
-            if module_key == "vk":
-                self.scheduler.add_job(
-                    func=publish_for_vk,
-                    trigger=trigger,
-                    args=[schedule],
-                    id=f"vk_{schedule.id}",
-                    replace_existing=True,
-                )
-                logger.info(f"[Scheduler] Добавлено задание VK '{schedule.id}' с cron '{schedule.cron}'")
-            elif module_key == "telegram":
-                self.scheduler.add_job(
-                    func=publish_for_telegram,
-                    trigger=trigger,
-                    args=[schedule],
-                    id=f"tg_{schedule.id}",
-                    replace_existing=True,
-                )
-                logger.info(f"[Scheduler] Добавлено задание Telegram '{schedule.id}' с cron '{schedule.cron}'")
-            else:
-                logger.warning(
-                    f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'"
-                )
+            if schedule.enabled:
+                self.add_schedule(schedule)
 
         self.scheduler.start()
         logger.info("[Scheduler] Планировщик запущен")
 
     def shutdown(self):
-        """
-        Останавливает APScheduler.
-        """
+        """Останавливает APScheduler."""
         self.scheduler.shutdown()
         logger.info("[Scheduler] Планировщик остановлен")
+
+
+def publish_job(schedule: ScheduleConfig):
+    """Выполняет единичную публикацию согласно конфигурации."""
+    module_key = schedule.module.strip().lower()
+    if module_key == "vk":
+        publish_for_vk(schedule)
+    elif module_key == "telegram":
+        publish_for_telegram(schedule)
+    else:
+        logger.warning(f"[Scheduler] Неизвестный module '{schedule.module}' для публикации")
