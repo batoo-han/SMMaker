@@ -21,7 +21,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.config.settings import settings
 from src.core.models import ScheduleConfig, Post
-from src.modules import get_publisher, get_generator
 from src.vector_db.vector_client import VectorClient
 from src.sheets.sheets_client import SheetsClient
 
@@ -80,6 +79,7 @@ def publish_for_vk(schedule: ScheduleConfig):
         return
 
     try:
+        from src.modules import get_generator
         text_generator = get_generator(text_key)
     except ValueError as e:
         logger.error(f"[{module}] {e}", exc_info=True)
@@ -115,6 +115,7 @@ def publish_for_vk(schedule: ScheduleConfig):
         img_key = settings.IMAGE_NETWORK.strip().lower()
 
     try:
+        from src.modules import get_generator
         image_generator = get_generator(img_key)
     except ValueError as e:
         logger.error(f"[{module}] {e}", exc_info=True)
@@ -159,6 +160,7 @@ def publish_for_vk(schedule: ScheduleConfig):
     )
 
     try:
+        from src.modules import get_publisher
         publisher = get_publisher("vk")
         raw_vk_id = publisher.publish(post)
         if not raw_vk_id:
@@ -252,6 +254,7 @@ def publish_for_telegram(schedule: ScheduleConfig):
         return
 
     try:
+        from src.modules import get_generator
         text_generator = get_generator(text_key)
     except ValueError as e:
         logger.error(f"[{module}] {e}", exc_info=True)
@@ -286,6 +289,7 @@ def publish_for_telegram(schedule: ScheduleConfig):
         img_key = settings.IMAGE_NETWORK.strip().lower()
 
     try:
+        from src.modules import get_generator
         image_generator = get_generator(img_key)
     except ValueError as e:
         logger.error(f"[{module}] {e}", exc_info=True)
@@ -329,6 +333,7 @@ def publish_for_telegram(schedule: ScheduleConfig):
     )
 
     try:
+        from src.modules import get_publisher
         publisher = get_publisher("telegram")
         raw_tg_id = publisher.publish(post)
         if not raw_tg_id:
@@ -377,6 +382,15 @@ def publish_for_telegram(schedule: ScheduleConfig):
         logger.error(f"[{module}] Ошибка при обновлении Google Sheets: {e}", exc_info=True)
 
 
+def publish_job(schedule: ScheduleConfig):
+    """Вызывает функцию публикации в зависимости от типа модуля."""
+    module_key = schedule.module.strip().lower()
+    if module_key == "vk":
+        publish_for_vk(schedule)
+    elif module_key == "telegram":
+        publish_for_telegram(schedule)
+
+
 class Scheduler:
     """
     Обёртка над APScheduler: при инициализации создаёт расписания для всех активных задач
@@ -386,38 +400,40 @@ class Scheduler:
     def __init__(self):
         self.scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
 
+    def start(self):
+        """Регистрирует задания из settings и запускает планировщик."""
         for schedule in settings.SCHEDULES:
             if not schedule.enabled:
                 continue
-
-            module_key = schedule.module.strip().lower()
-            trigger = CronTrigger.from_crontab(schedule.cron, timezone=MOSCOW_TZ)
-
-            if module_key == "vk":
-                self.scheduler.add_job(
-                    func=publish_for_vk,
-                    trigger=trigger,
-                    args=[schedule],
-                    id=f"vk_{schedule.id}",
-                    replace_existing=True,
-                )
-                logger.info(f"[Scheduler] Добавлено задание VK '{schedule.id}' с cron '{schedule.cron}'")
-            elif module_key == "telegram":
-                self.scheduler.add_job(
-                    func=publish_for_telegram,
-                    trigger=trigger,
-                    args=[schedule],
-                    id=f"tg_{schedule.id}",
-                    replace_existing=True,
-                )
-                logger.info(f"[Scheduler] Добавлено задание Telegram '{schedule.id}' с cron '{schedule.cron}'")
-            else:
-                logger.warning(
-                    f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'"
-                )
-
+            self.add_schedule(schedule)
         self.scheduler.start()
         logger.info("[Scheduler] Планировщик запущен")
+
+    def add_schedule(self, schedule: ScheduleConfig):
+        trigger = CronTrigger.from_crontab(schedule.cron, timezone=MOSCOW_TZ)
+        module_key = schedule.module.strip().lower()
+        job_id = schedule.id
+
+        if module_key == "vk":
+            func = publish_for_vk
+        elif module_key == "telegram":
+            func = publish_for_telegram
+        else:
+            logger.warning(
+                f"[Scheduler] Пропущено неизвестное module '{schedule.module}' в расписании '{schedule.id}'"
+            )
+            return
+
+        self.scheduler.add_job(
+            func=func,
+            trigger=trigger,
+            args=[schedule],
+            id=job_id,
+            replace_existing=True,
+        )
+
+    def remove_schedule(self, schedule_id: str):
+        self.scheduler.remove_job(schedule_id)
 
     def shutdown(self):
         """

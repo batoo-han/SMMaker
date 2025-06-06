@@ -10,6 +10,7 @@ sheets_client.py
 import logging
 import time
 from typing import Tuple, Optional, Dict, List
+from src.core.models import Post
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -26,8 +27,9 @@ class SheetsClient:
     Клиент для взаимодействия с Google Sheets через gspread + google-auth.
     """
 
-    def __init__(self):
-        creds_path = settings.GOOGLE_CREDENTIALS_PATH
+    def __init__(self, credentials_json_path: str | None = None, spreadsheet_name: str | None = None, sheet_name: str | None = None):
+        self.default_sheet = sheet_name
+        creds_path = credentials_json_path or settings.GOOGLE_CREDENTIALS_PATH
         if not creds_path:
             raise ValueError("GOOGLE_CREDENTIALS_PATH не задан в settings")
 
@@ -39,38 +41,15 @@ class SheetsClient:
             logger.error(f"[SheetsClient] Ошибка авторизации через gspread:\n{e}", exc_info=True)
             raise
 
-        spreadsheet_ref = settings.SHEETS_SPREADSHEET
+        spreadsheet_ref = spreadsheet_name or settings.SHEETS_SPREADSHEET
         if not spreadsheet_ref:
             raise ValueError("SHEETS_SPREADSHEET не задан в settings")
 
-        # Попытки открыть таблицу: open_by_key или open_by_url
         try:
-            self.spreadsheet = self.gc.open_by_key(spreadsheet_ref)
-            logger.info(f"[SheetsClient] Открыта таблица по ID: {spreadsheet_ref}")
-        except Exception as e_key:
-            logger.warning(f"[SheetsClient] Не удалось открыть по ключу (ID='{spreadsheet_ref}'): {e_key}")
-            # Если указан полный URL
-            if "/spreadsheets/" in spreadsheet_ref:
-                try:
-                    self.spreadsheet = self.gc.open_by_url(spreadsheet_ref)
-                    logger.info(f"[SheetsClient] Открыта таблица по URL: {spreadsheet_ref}")
-                except Exception as e_url:
-                    error_msg = (
-                        f"[SheetsClient] Не удалось открыть таблицу '{spreadsheet_ref}':\n"
-                        f"  Ошибка по ID: {e_key}\n"
-                        f"  Ошибка по URL: {e_url}\n"
-                        "  Проверьте правильность ID/URL и доступ сервисного аккаунта."
-                    )
-                    logger.error(error_msg, exc_info=True)
-                    raise ValueError(error_msg)
-            else:
-                error_msg = (
-                    f"[SheetsClient] Не удалось открыть таблицу '{spreadsheet_ref}' по ID: {e_key}\n"
-                    "  Проверьте, что SHEETS_SPREADSHEET — корректный Spreadsheet ID или URL,\n"
-                    "  и что сервисный аккаунт добавлен в редакторы таблицы."
-                )
-                logger.error(error_msg, exc_info=True)
-                raise ValueError(error_msg)
+            self.spreadsheet = self.gc.open(spreadsheet_ref)
+        except Exception as e:
+            logger.error(f"[SheetsClient] Не удалось открыть таблицу '{spreadsheet_ref}': {e}", exc_info=True)
+            raise
 
     def _open_sheet(self, sheet_name: str):
         """
@@ -96,38 +75,24 @@ class SheetsClient:
                 logger.error(f"[SheetsClient] Не удалось открыть лист '{sheet_name}': {e}", exc_info=True)
                 raise
 
-    def get_next_post(self, sheet_name: str) -> Tuple[Optional[int], Optional[Dict[str, str]]]:
+    def get_next_post(self, sheet_name: str | None = None) -> Tuple[Optional[int], Optional[Dict[str, str]]]:
+        if sheet_name is None:
+            sheet_name = self.default_sheet
         """
         Ищет в указанном листе первую строку, где колонка "status" == "ожидание".
         Возвращает (row_number, row_data) или (None, None).
         """
         try:
             sheet = self._open_sheet(sheet_name)
-            all_values: List[List[str]] = sheet.get_all_values()
-            if not all_values or len(all_values) < 2:
+            records = sheet.get_all_records()
+            if not records:
                 return None, None
 
-            header = all_values[0]
-            # Находим индекс колонки "status"
-            status_col_idx = None
-            for idx, col_name in enumerate(header):
-                if col_name.strip().lower() == "status":
-                    status_col_idx = idx
-                    break
-            if status_col_idx is None:
-                logger.error(f"[SheetsClient] В шапке листа '{sheet_name}' нет колонки 'status'")
-                return None, None
-
-            # Проходим по строкам, начиная со 2-й (row_idx = 2 и далее)
-            for row_idx, row in enumerate(all_values[1:], start=2):
-                if len(row) > status_col_idx and row[status_col_idx].strip().lower() == "ожидание":
-                    row_data: Dict[str, str] = {}
-                    for col_idx, col_name in enumerate(header):
-                        cell_value = ""
-                        if len(row) > col_idx:
-                            cell_value = row[col_idx].strip()
-                        row_data[col_name.strip()] = cell_value
-                    return row_idx, row_data
+            for idx, row in enumerate(records, start=2):
+                status = row.get("status", "").strip().lower()
+                if status == "ожидание":
+                    post = Post(**{k: str(v) for k, v in row.items()})
+                    return post, idx
 
             return None, None
 
@@ -137,7 +102,7 @@ class SheetsClient:
 
     def update_row_fields(
         self,
-        sheet_name: str,
+        sheet_name: str | None,
         row_index: int,
         fields: Dict[str, str]
     ) -> None:
@@ -148,30 +113,26 @@ class SheetsClient:
         :param row_index:  номер строки (1-based).
         :param fields:     словарь {column_header: new_value}, где column_header – название колонки в первой строке.
         """
+        if sheet_name is None:
+            sheet_name = self.default_sheet
         try:
             sheet = self._open_sheet(sheet_name)
-            header = sheet.row_values(1)  # первая строка: заголовок
-
-            # Составляем mapping: "header_name_lower" -> column_index (1-based)
-            header_map = {}
-            for idx, col_name in enumerate(header):
-                header_map[col_name.strip().lower()] = idx + 1
-
-            # Проходим по всем ключам из fields и обновляем ячейки
-            for col_name, new_value in fields.items():
-                col_key = col_name.strip().lower()
-                if col_key not in header_map:
-                    logger.warning(f"[SheetsClient] В шапке '{sheet_name}' нет колонки '{col_name}' — пропускаем")
-                    continue
-                col_idx = header_map[col_key]
-                sheet.update_cell(row_index, col_idx, new_value)
+            header = list(sheet.get_all_records()[0].keys())
+            values = []
+            for col_name in header:
+                key = col_name.strip().lower()
+                values.append(fields.get(key, ""))
+            start = "A"  # всегда начинаем с A
+            end = chr(ord("A") + len(header) - 1)
+            cell_range = f"{start}{row_index}:{end}{row_index}"
+            sheet.update(cell_range, [values])
 
         except Exception as e:
             logger.error(f"[SheetsClient] Ошибка при update_row_fields('{sheet_name}', {row_index}, {fields}): {e}", exc_info=True)
 
     def update_post_status_and_meta(
         self,
-        sheet_name: str,
+        sheet_name: str | None,
         row_index: int,
         status: str,
         scheduled: str,
@@ -191,5 +152,18 @@ class SheetsClient:
             "ai": ai,
             "model": model,
             "notes": notes
+        }
+        self.update_row_fields(sheet_name, row_index, fields)
+
+    def update_post(self, row_index: int, post: Post, sheet_name: str | None = None) -> None:
+        fields = {
+            "idea": post.idea,
+            "status": post.status,
+            "scheduled": post.scheduled,
+            "socialnet": post.socialnet,
+            "url": post.url,
+            "ai": post.ai,
+            "model": post.model,
+            "notes": post.notes,
         }
         self.update_row_fields(sheet_name, row_index, fields)
