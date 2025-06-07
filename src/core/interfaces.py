@@ -90,3 +90,23 @@ class PublisherInterface(ABC):
                            Если публикация не удалась, вернуть None или бросить исключение.
         """
         raise NotImplementedError
+
+
+class StatsInterface(ABC):
+    """
+    Интерфейс для сбора статистики по опубликованным постам.
+    Классы-наследники должны реализовать метод ``collect``.
+    """
+
+    @abstractmethod
+    def collect(self, post_url: str) -> Dict:
+        """
+        Возвращает статистику по публикации.
+
+        Args:
+            post_url (str): URL или идентификатор опубликованного поста.
+
+        Returns:
+            Dict: словарь со статистикой (лайки, просмотры и др.).
+        """
+        raise NotImplementedError
