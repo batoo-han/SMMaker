@@ -9,6 +9,7 @@ main.py
 import sys
 import os
 import logging
+import time
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
@@ -111,7 +112,8 @@ def main():
         try:
             scheduler.start()
             # Блокируем основной поток, пока планировщик работает
-            scheduler.scheduler.sleep()
+            while True:
+                time.sleep(1)
         except (KeyboardInterrupt, SystemExit):
             logger.info("Остановка Scheduler по сигналу")
             scheduler.shutdown()
