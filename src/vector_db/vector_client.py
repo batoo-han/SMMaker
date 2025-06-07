@@ -55,8 +55,7 @@ class VectorClient:
 
         # Инициализация клиента ChromaDB через Settings (позиционный аргумент)
         try:
-            #self.client = chromadb.Client(chroma_config)
-            self.client = chromadb.Client()
+            self.client = chromadb.Client(chroma_config)
         except Exception as e:
             raise RuntimeError(f"Не удалось инициализировать chromadb.Client: {e}")
 

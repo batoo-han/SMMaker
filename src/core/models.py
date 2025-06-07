@@ -32,7 +32,7 @@ class ScheduleConfig(BaseModel):
     module: str
     cron: str
     prompt_key: str
-    generator: str
+    generator: str = "openai"
     image_generator: Optional[str] = None
     enabled: bool = True
 
@@ -48,11 +48,20 @@ class Post(BaseModel):
       - image_bytes: bytes      — байты изображения (PNG, JPEG)
       - metadata: Dict[str, str] — доп. данные (например, model, tokens, cost и т.д.)
     """
-    id: str
-    title: str
-    content: str
-    image_bytes: bytes
+    id: Optional[str] = None
+    title: Optional[str] = None
+    content: Optional[str] = None
+    image_bytes: Optional[bytes] = None
     metadata: Dict[str, str] = Field(default_factory=dict)
+    # Fields used in Sheets tests
+    idea: Optional[str] = None
+    status: Optional[str] = None
+    scheduled: Optional[str] = None
+    socialnet: Optional[str] = None
+    url: Optional[str] = None
+    ai: Optional[str] = None
+    model: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class VectorEntry(BaseModel):
