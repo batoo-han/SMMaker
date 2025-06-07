@@ -44,21 +44,21 @@ class VectorClient:
         if not isinstance(embedding_model, str):
             raise ValueError(f"embedding_model должен быть строкой, получено: {type(embedding_model)}")
 
-        # Создаём Settings для ChromaDB, указывая реализацию и директорию
+        # Создаём Settings для ChromaDB и инициализируем PersistentClient
         try:
             chroma_config = ChromaSettings(
                 chroma_db_impl="duckdb+parquet",
-                persist_directory=persist_directory
+                persist_directory=persist_directory,
+            )
+            # Используем PersistentClient для сохранения данных на диск
+            self.client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=chroma_config,
             )
         except Exception as e:
-            raise RuntimeError(f"Не удалось создать ChromaSettings: {e}")
-
-        # Инициализация клиента ChromaDB через Settings (позиционный аргумент)
-        try:
-            #self.client = chromadb.Client(chroma_config)
-            self.client = chromadb.Client()
-        except Exception as e:
-            raise RuntimeError(f"Не удалось инициализировать chromadb.Client: {e}")
+            raise RuntimeError(
+                f"Не удалось инициализировать chromadb.PersistentClient: {e}"
+            )
 
         # Функция эмбеддинга через OpenAI
         try:
