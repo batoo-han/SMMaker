@@ -152,16 +152,18 @@ class VectorClient:
         metadatas = results.get("metadatas", [])
 
         # Если нет записей
-        if not documents or len(documents) == 0:
+        if not documents:
             return None
 
-        doc_list = documents[0]
-        meta_list = metadatas[0]
+        # chromadb может возвращать плоский список документов и метаданных,
+        # либо список, вложенный в ещё один список (как в методе query).
+        doc_list = documents[0] if documents and isinstance(documents[0], list) else documents
+        meta_list = metadatas[0] if metadatas and isinstance(metadatas[0], list) else metadatas
 
         latest_text = None
         latest_ts = None
 
-        for idx, meta in enumerate(meta_list):
+        for doc, meta in zip(doc_list, meta_list):
             created_str = meta.get("created_at")
             if not created_str:
                 continue
@@ -172,7 +174,7 @@ class VectorClient:
 
             if latest_ts is None or created > latest_ts:
                 latest_ts = created
-                latest_text = doc_list[idx]
+                latest_text = doc
 
         return latest_text
 
