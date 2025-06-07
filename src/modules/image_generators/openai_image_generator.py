@@ -12,6 +12,7 @@ openai_image_generator.py
 
 import logging
 import openai
+import base64
 from typing import Optional
 
 from src.core.interfaces import GeneratorInterface
@@ -66,14 +67,33 @@ class OpenAIImageGenerator(GeneratorInterface):
             logger.error(f"[OpenAIImage] Ошибка при вызове images.generate: {e}")
             raise
 
-        # Извлекаем URL первого сгенерированного изображения
+        # Проверяем наличие base64-строки в ответе
         try:
-            image_url = response.data[0].url
+            first = response.data[0]
+            b64_data = None
+            if isinstance(first, dict):
+                b64_data = first.get("b64_json")
+                image_url = first.get("url")
+            else:
+                b64_data = getattr(first, "b64_json", None)
+                image_url = getattr(first, "url", None)
         except Exception as e:
-            logger.error(f"[OpenAIImage] Не удалось получить URL из ответа: {e}")
+            logger.error(f"[OpenAIImage] Некорректный формат ответа: {e}")
             raise
 
-        # Скачиваем изображение по URL
+        # Если есть b64_json, декодируем и возвращаем
+        if b64_data:
+            try:
+                return base64.b64decode(b64_data)
+            except Exception as e:
+                logger.error(f"[OpenAIImage] Ошибка декодирования Base64: {e}")
+                raise
+
+        # Иначе используем URL и скачиваем изображение
+        if not image_url:
+            logger.error("[OpenAIImage] В ответе нет URL изображения")
+            raise ValueError("URL изображения отсутствует в ответе")
+
         try:
             import requests
             img_resp = requests.get(image_url, timeout=30)
