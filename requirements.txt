@@ -34,3 +34,4 @@ pytest
 pyyaml
 
 pytz
+cryptography
