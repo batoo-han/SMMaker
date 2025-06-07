@@ -19,11 +19,13 @@ def test_schedule_added_and_removed(monkeypatch):
         cron="*/5 * * * *",
         enabled=True,
         prompt_key="post_intro",
+        generator="openai",
     )
 
     monkeypatch.setattr(settings, "SCHEDULES", [sched])
 
     scheduler = Scheduler()
+    scheduler.add_schedule(sched)
 
     job_id = f"vk_{sched.id}"
     job = scheduler.scheduler.get_job(job_id)
@@ -49,12 +51,14 @@ def test_scheduler_registers_jobs(monkeypatch):
                 module="vk",
                 cron="*/1 * * * *",  # каждую минуту
                 enabled=True,
-                prompt_key="post_intro"
+                prompt_key="post_intro",
+                generator="openai"
             )
         ]
     )
 
     scheduler = Scheduler()
+    scheduler.start()
 
     job_id = "vk_job1"
     job = scheduler.scheduler.get_job(job_id)
@@ -76,7 +80,8 @@ def test_publish_for_vk_no_tasks(monkeypatch):
         module="vk",
         cron="*/1 * * * *",
         enabled=True,
-        prompt_key="post_intro"
+        prompt_key="post_intro",
+        generator="openai"
     )
     # Должно пройти без исключений
     publish_for_vk(fake_sched)
