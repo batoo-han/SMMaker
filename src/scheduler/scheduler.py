@@ -32,6 +32,21 @@ from typing import Union
 logger = logging.getLogger(__name__)
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
+# Singleton instance of VectorClient
+_VECTOR_CLIENT = None
+
+
+def get_vector_client() -> VectorClient:
+    """Return a shared VectorClient instance."""
+    global _VECTOR_CLIENT
+    if _VECTOR_CLIENT is None:
+        _VECTOR_CLIENT = VectorClient(
+            persist_directory=settings.CHROMA_PERSIST_DIR,
+            collection_name=settings.CHROMA_COLLECTION_NAME,
+            embedding_model=settings.OPENAI_EMBEDDING_MODEL,
+        )
+    return _VECTOR_CLIENT
+
 
 def publish_for_vk(schedule: ScheduleConfig):
     module = "vk"
@@ -51,11 +66,7 @@ def publish_for_vk(schedule: ScheduleConfig):
         return
 
     try:
-        vector_client = VectorClient(
-            persist_directory=settings.CHROMA_PERSIST_DIR,
-            collection_name=settings.CHROMA_COLLECTION_NAME,
-            embedding_model=settings.OPENAI_EMBEDDING_MODEL,
-        )
+        vector_client = get_vector_client()
         last_vk = vector_client.get_last_by_network("vk") or ""
     except Exception as e:
         logger.error(f"[{module}] Ошибка доступа к ChromaDB: {e}", exc_info=True)
@@ -223,11 +234,7 @@ def publish_for_telegram(schedule: ScheduleConfig):
         return
 
     try:
-        vector_client = VectorClient(
-            persist_directory=settings.CHROMA_PERSIST_DIR,
-            collection_name=settings.CHROMA_COLLECTION_NAME,
-            embedding_model=settings.OPENAI_EMBEDDING_MODEL,
-        )
+        vector_client = get_vector_client()
         last_tg = vector_client.get_last_by_network("telegram") or ""
     except Exception as e:
         logger.error(f"[{module}] Ошибка доступа к ChromaDB: {e}", exc_info=True)
@@ -384,6 +391,8 @@ class Scheduler:
     def __init__(self):
         # Планировщик не стартует автоматически, его запускают явно через start()
         self.scheduler = BackgroundScheduler(timezone=MOSCOW_TZ)
+        # Создаём VectorClient один раз
+        self.vector_client = get_vector_client()
 
     def add_schedule(self, schedule: ScheduleConfig) -> None:
         """Добавляет одно расписание в APScheduler."""

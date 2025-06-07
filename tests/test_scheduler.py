@@ -5,6 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pytest
 from apscheduler.triggers.cron import CronTrigger
+from src.scheduler import scheduler as sched_module
 from src.scheduler.scheduler import Scheduler, publish_for_vk
 from src.core.models import ScheduleConfig
 from src.config.settings import settings
@@ -85,3 +86,27 @@ def test_publish_for_vk_no_tasks(monkeypatch):
     )
     # Должно пройти без исключений
     publish_for_vk(fake_sched)
+
+
+def test_vector_client_singleton(monkeypatch):
+    """VectorClient should be instantiated only once."""
+
+    calls = []
+
+    class DummyVC:
+        def __init__(self, *a, **k):
+            calls.append(1)
+
+        def get_last_by_network(self, network):
+            return ""
+
+        def add_post(self, *a, **k):
+            pass
+
+    monkeypatch.setattr(sched_module, "VectorClient", DummyVC)
+    sched_module._VECTOR_CLIENT = None
+
+    vc1 = sched_module.get_vector_client()
+    vc2 = sched_module.get_vector_client()
+    assert vc1 is vc2
+    assert len(calls) == 1
