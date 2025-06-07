@@ -127,7 +127,19 @@ class TelegramPublisher(PublisherInterface):
             return url
 
         try:
-            url = asyncio.run(_publish_async(self.token, self.chat_id, post.image_bytes, sanitized_text))
+            coro = _publish_async(self.token, self.chat_id, post.image_bytes, sanitized_text)
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                url = asyncio.run(coro)
+            else:
+                if loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(coro, loop)
+                    url = future.result()
+                else:
+                    url = loop.run_until_complete(coro)
+
             if url:
                 logger.info(f"[TelegramPublisher] Успешно опубликовано: {url}")
                 print(f"Telegram post published: {url}")
