@@ -14,6 +14,7 @@ settings.py
 """
 
 import os
+import sqlite3
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -169,6 +170,32 @@ class Settings(BaseSettings):
                 # Игнорируем ошибки парсинга YAML, если файл повреждён
                 pass
 
+    @staticmethod
+    def fetch_user_settings(user_id: int, db_path: str = "user_settings.db") -> Dict[str, str]:
+        """Читает пары ключ/значение из таблицы user_settings для указанного пользователя."""
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER, key TEXT, value TEXT, PRIMARY KEY (user_id, key))"
+        )
+        cursor.execute("SELECT key, value FROM user_settings WHERE user_id=?", (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {k: v for k, v in rows}
+
+    @classmethod
+    def for_user(cls, user_id: int, db_path: str = "user_settings.db") -> "Settings":
+        """Создаёт Settings, подставляя значения из UserSetting."""
+        data = cls.fetch_user_settings(user_id, db_path)
+        return cls(**data)
+
 
 # Единственный глобальный экземпляр настроек
 settings = Settings()
+
+
+def set_active_user(user_id: int, db_path: str = "user_settings.db") -> Settings:
+    """Пересоздаёт глобальный объект settings, подставляя данные пользователя."""
+    global settings
+    settings = Settings.for_user(user_id, db_path)
+    return settings

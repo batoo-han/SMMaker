@@ -62,7 +62,7 @@ project-root/
    pip install -r requirements.txt
    ```
 4. Создайте файл `.env` согласно шаблону:
-   ```dotenv
+```dotenv
    OPENAI_API_KEY=your_openai_api_key
    YANDEX_API_KEY=your_yandex_api_key
    YANDEX_CLOUD_FOLDER_ID=your_yandex_folder_id
@@ -101,7 +101,32 @@ project-root/
      "post_intro":"Напиши вступление к статье о ...",
      "post_summary":"Сделай краткое резюме для поста."
    }
-   ```
+```
+
+## Регистрация пользователей
+
+Пользователи сохраняются в SQLite базе `data/app.db`. Добавить администратора
+можно через небольшой скрипт:
+
+```python
+from src.core.user_db import create_user
+
+create_user("admin", "secret")
+```
+
+Для проверки пароля используется SHA‑256 хеш.
+
+## Настройки через базу данных
+
+В той же базе хранится таблица `settings`. Параметры можно читать и изменять
+прямо из кода:
+
+```python
+from src.core.user_db import set_setting, get_setting
+
+set_setting("vk_enabled", "true")
+print(get_setting("vk_enabled"))
+```
 
 ## Запуск приложения
 

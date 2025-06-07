@@ -35,3 +35,10 @@ pyyaml
 
 pytz
 cryptography
+=======
+
+# API and authentication
+fastapi
+uvicorn
+passlib[bcrypt]
+

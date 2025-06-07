@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / etc
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+*.pyd
+
+# Distribution / packaging
+.Python
+dist/
+build/
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+
+# Env files
+.env
+.env.*
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.sublime*
+*~
+*.swp
+.DS_Store
+Thumbs.db

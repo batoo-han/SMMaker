@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
-from src.config.settings import settings
+from src.config.settings import settings, set_active_user
 from src.scheduler.scheduler import Scheduler, publish_for_vk, publish_for_telegram
 
 
@@ -93,11 +93,13 @@ def process_immediate():
 
 
 def main():
+    user_id = int(os.getenv("USER_ID", "1"))
+    set_active_user(user_id)
     setup_logging()
     logger = logging.getLogger("main")
     logger.info("Запуск приложения SMMaker")
 
-    # Инициализируем наш Scheduler (он сам внутри конструктора запускает фоновые задачи)
+    # Инициализируем планировщик
     scheduler = Scheduler()
 
     # Проверяем, есть ли активные расписания для VK или Telegram
@@ -107,9 +109,9 @@ def main():
     if has_vk_schedule or has_tg_schedule:
         logger.info("Найдены активные расписания — запускаем Scheduler")
         try:
-            # Просто держим процесс живым, пока APScheduler работает в фоне
-            while True:
-                pass
+            scheduler.start()
+            # Блокируем основной поток, пока планировщик работает
+            scheduler.scheduler.sleep()
         except (KeyboardInterrupt, SystemExit):
             logger.info("Остановка Scheduler по сигналу")
             scheduler.shutdown()

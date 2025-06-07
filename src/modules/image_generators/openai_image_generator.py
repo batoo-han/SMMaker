@@ -7,7 +7,7 @@ openai_image_generator.py
 обновлённая для openai-python>=1.0.0.
 
 Теперь вместо устаревшего `openai.Image.create(...)` используется `openai.images.generate(...)`.
-См. миграцию: :contentReference[oaicite:0]{index=0}
+См. миграцию.
 """
 
 import logging
