@@ -34,3 +34,8 @@ pytest
 pyyaml
 
 pytz
+
+# API and authentication
+fastapi
+uvicorn
+passlib[bcrypt]
