@@ -27,6 +27,7 @@ from src.sheets.sheets_client import SheetsClient
 
 from io import BytesIO
 from PIL import Image
+from typing import Union
 
 logger = logging.getLogger(__name__)
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
@@ -399,16 +400,22 @@ class Scheduler:
             )
             return
 
+        job_id = f"{module_key}_{schedule.id}"
         self.scheduler.add_job(
             func=job_func,
             trigger=trigger,
             args=[schedule],
-            id=schedule.id,
+            id=job_id,
             replace_existing=True,
         )
 
-    def remove_schedule(self, job_id: str) -> None:
-        """Удаляет задание по идентификатору."""
+    def remove_schedule(self, schedule_or_id: Union[str, ScheduleConfig]) -> None:
+        """Удаляет задание по идентификатору или конфигурации."""
+        if isinstance(schedule_or_id, ScheduleConfig):
+            module_key = schedule_or_id.module.strip().lower()
+            job_id = f"{module_key}_{schedule_or_id.id}"
+        else:
+            job_id = schedule_or_id
         try:
             self.scheduler.remove_job(job_id)
         except Exception:
