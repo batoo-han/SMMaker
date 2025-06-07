@@ -70,9 +70,10 @@ project-root/
    VK_OWNER_ID=-<group_id>
    TG_TOKEN=your_telegram_bot_token
    TG_CHAT_ID=@your_channel_or_chat_id
-   GOOGLE_CREDENTIALS_PATH=/path/to/service_account.json
-   SHEETS_NAME=press
-   SHEETS_TAB=smm
+  GOOGLE_CREDENTIALS_PATH=/path/to/service_account.json
+  SHEETS_SPREADSHEET=press
+  VK_SHEETS_TAB=vk
+  TG_SHEETS_TAB=tg
 
    ENABLE_VK=true
    ENABLE_TG=true
