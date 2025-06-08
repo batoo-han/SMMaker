@@ -40,4 +40,5 @@ cryptography
 fastapi
 uvicorn
 passlib[bcrypt]
+jinja2
 
