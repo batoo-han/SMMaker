@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Form, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from pathlib import Path
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -10,7 +11,7 @@ from src.db import models
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key="change_me")
 
-templates = Jinja2Templates(directory=str(__file__).replace("__init__.py", "templates"))
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
