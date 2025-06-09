@@ -41,4 +41,5 @@ fastapi
 uvicorn
 passlib[bcrypt]
 jinja2
+Flask
 
