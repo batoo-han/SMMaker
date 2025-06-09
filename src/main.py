@@ -109,16 +109,16 @@ def main():
 
     if has_vk_schedule or has_tg_schedule:
         logger.info("Найдены активные расписания — запускаем Scheduler")
-        try:
-            scheduler.start()
-            # Блокируем основной поток, пока планировщик работает
-            while True:
-                time.sleep(1)
-        except (KeyboardInterrupt, SystemExit):
-            logger.info("Остановка Scheduler по сигналу")
-            scheduler.shutdown()
+        scheduler.start()
     else:
         process_immediate()
+
+    from src.web import app as web_app
+    logger.info("Запуск веб-интерфейса Flask")
+    try:
+        web_app.run(host="0.0.0.0", port=8000)
+    finally:
+        scheduler.shutdown()
 
 
 if __name__ == "__main__":
